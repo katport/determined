@@ -1,6 +1,5 @@
 import pytest
 
-
 from tests.integrations import config as conf
 from tests.integrations import experiment as exp
 

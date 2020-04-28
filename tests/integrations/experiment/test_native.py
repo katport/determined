@@ -13,13 +13,7 @@ from tests.integrations.experiment import create_native_experiment, experiment
 
 NativeImplementation = collections.namedtuple(
     "NativeImplementation",
-    [
-        "cwd",
-        "command",
-        "configuration",
-        "num_expected_steps_per_trial",
-        "num_expected_trials",
-    ],
+    ["cwd", "command", "configuration", "num_expected_steps_per_trial", "num_expected_trials",],
 )
 
 
