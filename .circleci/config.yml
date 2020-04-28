@@ -622,7 +622,7 @@ jobs:
           extra-requirements-file: "tests/integrations/requirements.txt"
           executor: python:3.6.9
       - set-cluster-id:
-          cluster-id: e2e-gpu-$(git rev-parse --short HEAD)-${CIRCLE_BUILD_NUM}
+          cluster-id: e2e-gpu-$(git rev-parse --short HEAD)-${CIRCLE_BUILD_NUM}-${CIRCLE_NODE_INDEX}
       - deploy-aws-cluster:
           cluster-id: ${CLUSTER_ID}
           det-version: ${CIRCLE_SHA1}
@@ -658,7 +658,7 @@ jobs:
           extra-requirements-file: "tests/integrations/requirements.txt"
           executor: python:3.6.9
       - set-cluster-id:
-          cluster-id: parallel-$(git rev-parse --short HEAD)-${CIRCLE_BUILD_NUM}
+          cluster-id: parallel-$(git rev-parse --short HEAD)-${CIRCLE_BUILD_NUM}-${CIRCLE_NODE_INDEX}
       - deploy-aws-cluster:
           cluster-id: ${CLUSTER_ID}
           det-version: ${CIRCLE_SHA1}
