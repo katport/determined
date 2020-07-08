@@ -26,11 +26,15 @@ Registry for meta-architectures, i.e. the whole model.
 The registered object will be called with `obj(cfg)`
 and expected to return a `nn.Module` object.
 """
-
+import os
+from os import listdir
+from os.path import isfile, join
 
 class DetectronTrial(PyTorchTrial):
     def __init__(self, context: det.TrialContext) -> None:
         self.context = context
+        for f in listdir('/mnt/dtrain-fsx'):
+            print ('files: ', f)
 
         # Create a unique download directory for each rank so they don't overwrite each other.
         self.download_directory = f"/tmp/data-rank{self.context.distributed.get_rank()}"
@@ -38,11 +42,11 @@ class DetectronTrial(PyTorchTrial):
         self.cfg = get_cfg()
         self.cfg.merge_from_file(self.context.get_hparam('model_yaml'))
 
-    # def create_lr_scheduler(self, optimizer: torch.optim.Optimizer):
-    #     step_mode = LRScheduler.StepMode.STEP_EVERY_BATCH
-    #     scheduler = build_lr_scheduler(self.cfg, optimizer)
+    def create_lr_scheduler(self, optimizer: torch.optim.Optimizer):
+        step_mode = LRScheduler.StepMode.STEP_EVERY_BATCH
+        scheduler = build_lr_scheduler(self.cfg, optimizer)
 
-    #     return LRScheduler(scheduler, step_mode=step_mode)
+        return LRScheduler(scheduler, step_mode=step_mode)
 
     def build_training_data_loader(self) -> DataLoader:
         
