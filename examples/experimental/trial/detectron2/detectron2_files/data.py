@@ -246,6 +246,57 @@ def get_detection_dataset_dicts(
     return dataset_dicts
 
 
+class AspectRatioGroupedDatasetBatchSamp():
+    """
+    Batch data that have similar aspect ratio together.
+    In this implementation, images whose aspect ratio < (or >) 1 will
+    be batched together.
+    It assumes the underlying dataset produces dicts with "width" and "height" keys.
+    It will then produce a list of original dicts with length = batch_size,
+    all with similar aspect ratios.
+    """
+
+    def __init__(self, dataset, batch_size):
+        """
+        Args:
+            dataset: an iterable. Each element must be a dict with keys
+                "width" and "height", which will be used to batch data.
+            batch_size (int):
+        """
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self._buckets = [[] for _ in range(2)]
+        # Hard-coded two aspect ratio groups: w > h and w < h.
+        # Can add support for more aspect ratio groups, but doesn't seem useful
+    def __len__(self):
+        return len(self.dataset)
+
+    # def __iter__(self):
+    #     print ('IN BATCH SAMPL ITER')
+        
+    #     for d in self.dataset:
+    #         w, h = d["width"], d["height"]
+    #         bucket_id = 0 if w > h else 1
+    #         bucket = self._buckets[bucket_id]
+    #         bucket.append(d)
+    #         if len(bucket) == self.batch_size:
+    #             print ('IN BATCH SAMPL ITER IF: ', len(bucket), bucket[0])
+    #             yield bucket[:]
+    #             del bucket[:]
+
+    def __iter__(self):
+        print ('IN BATCH SAMPL ITER')
+        
+        for idx, d in enumerate(self.dataset):
+            w, h = d["width"], d["height"]
+            bucket_id = 0 if w > h else 1
+            bucket = self._buckets[bucket_id]
+            bucket.append(idx)
+            if len(bucket) == self.batch_size:
+                print ('IN BATCH SAMPL ITER IF: ', len(bucket), bucket[0])
+                yield bucket[:]
+                del bucket[:]
+
 def build_batch_data_loader(
     dataset, sampler, total_batch_size, *, aspect_ratio_grouping=False, num_workers=0, batch_size=32
 ):
@@ -272,7 +323,9 @@ def build_batch_data_loader(
 
     batch_size = total_batch_size // world_size
     if aspect_ratio_grouping:
-        print ('IN data.py ASPECT RATIO')
+        print ('IN data.py returning dataset')
+
+        return dataset
         data_loader = DataLoader(
             dataset,
             sampler=sampler,
@@ -284,6 +337,8 @@ def build_batch_data_loader(
         )  # yield individual mapped dict
         return AspectRatioGroupedDataset(data_loader, batch_size)
     else:
+        print ('IN data.py returning dataloader')
+
         batch_sampler = torch.utils.data.sampler.BatchSampler(
             sampler, batch_size, drop_last=True
         )  # drop_last so the batch always have the same size
@@ -329,6 +384,7 @@ def build_detection_train_loader(cfg, batch_size, mapper=None):
     dataset = MapDataset(dataset, mapper)
 
     sampler_name = cfg.DATALOADER.SAMPLER_TRAIN
+    print ('sampler_name: ', sampler_name)
     logger = logging.getLogger(__name__)
     logger.info("Using training sampler {}".format(sampler_name))
     # TODO avoid if-else?
@@ -381,6 +437,7 @@ def build_detection_test_loader(cfg, dataset_name, batch_size, mapper=None):
         mapper = DatasetMapper(cfg, False)
     dataset = MapDataset(dataset, mapper)
 
+    return dataset
     sampler = InferenceSampler(len(dataset))
     # Always use 1 image per worker during inference since this is the
     # standard when reporting inference time in papers.

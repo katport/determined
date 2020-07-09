@@ -1,10 +1,11 @@
 description: detectron2_const
+environment:
+    image: "katport/detectron2:1.0"
 data:
   url: https://s3-us-west-2.amazonaws.com/determined-ai-test-data/pytorch_mnist.tar.gz
 hyperparameters:
-  # learning_rate: 1.0
-  global_batch_size: 64
-  model_yaml: e2e_mask_rcnn_R-50-FPN_1x.yaml #mask_rcnn_R_50_FPN_1x.yaml
+  global_batch_size: 16
+  model_yaml: mask_rcnn_R_50_FPN_1x.yaml #e2e_mask_rcnn_R-50-FPN_1x.yaml #mask_rcnn_R_50_FPN_1x.yaml
 searcher:
   name: single
   metric: validation_loss
