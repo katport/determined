@@ -79,6 +79,7 @@ class UNetsTrial(TFKerasTrial):
             'block_16_project',      # 4x4
         ]
         layers = [base_model.get_layer(name).output for name in layer_names]
+        print ('layers: ', layers)
 
         # Create the feature extraction model
         self.down_stack = tf.keras.Model(inputs=base_model.input, outputs=layers)
@@ -95,28 +96,18 @@ class UNetsTrial(TFKerasTrial):
         model = self.unet_model(self.context.get_hparam("OUTPUT_CHANNELS"))
         model = self.context.wrap_model(model)
 
-        model.compile(optimizer='adam',
+        model.compile(optimizer=tf.keras.optimizers.Adam(name='Adam'),
               loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
               metrics=[tf.keras.metrics.SparseCategoricalAccuracy(name="accuracy")])
         return model
 
     def build_training_data_loader(self):
-        # self.dataset, self.info = tfds.load(
-        #     'oxford_iiit_pet:3.*.*',
-        #     with_info=True,
-        #     data_dir=self.context.get_data_config().get('data_dir'),
-        #     download=False,
-        # )
-
-        # print ('num examples: ', self.info.splits['train'].num_examples)
-        dataset = tfds.load(
+        self.dataset, self.info = tfds.load(
             'oxford_iiit_pet:3.*.*',
-            split="train",
-            with_info=False,
+            with_info=True,
             data_dir=self.context.get_data_config().get('data_dir'),
             download=False,
         )
-
 
         def load_image_train(datapoint):
             input_image = tf.image.resize(datapoint['image'], (128, 128))
@@ -129,7 +120,7 @@ class UNetsTrial(TFKerasTrial):
             input_image, input_mask = self.normalize(input_image, input_mask)
             return input_image, input_mask
 
-        train = dataset.map(load_image_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        train = self.dataset['train'].map(load_image_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
         train = self.context.wrap_dataset(train)
         train_dataset = train.cache().shuffle(self.context.get_data_config().get("BUFFER_SIZE")).batch(self.context.get_per_slot_batch_size()).repeat()
         train_dataset = train_dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
@@ -137,13 +128,6 @@ class UNetsTrial(TFKerasTrial):
         return train_dataset
 
     def build_validation_data_loader(self):
-        dataset, info = tfds.load(
-            'oxford_iiit_pet:3.*.*',
-            split="test",
-            with_info=True,
-            data_dir=self.context.get_data_config()['data_dir'],
-            download=False
-        )
         def load_image_test(datapoint):
             input_image = tf.image.resize(datapoint['image'], (128, 128))
             input_mask = tf.image.resize(datapoint['segmentation_mask'], (128, 128))
@@ -152,7 +136,7 @@ class UNetsTrial(TFKerasTrial):
 
             return input_image, input_mask
 
-        test = dataset.map(load_image_test)
+        test = self.dataset['test'].map(load_image_test)
         test = self.context.wrap_dataset(test)
         test_dataset = test.batch(self.context.get_per_slot_batch_size())
         
