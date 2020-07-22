@@ -1,15 +1,15 @@
-description: detectron2_const
-environment:
-    image: "katport/detectron2:1.0"
+description: detectron2_const_just_loss_change_imgs_8
+# environment:
+#     image: "katport/detectron2:2.0"
 data:
   url: https://s3-us-west-2.amazonaws.com/determined-ai-test-data/pytorch_mnist.tar.gz
 hyperparameters:
-  global_batch_size: 16
-  model_yaml: mask_rcnn_R_50_FPN_1x.yaml #e2e_mask_rcnn_R-50-FPN_1x.yaml #mask_rcnn_R_50_FPN_1x.yaml
+  global_batch_size: 32
+  model_yaml: mask_rcnn_R_50_FPN_noaug_1x.yaml
 searcher:
   name: single
   metric: validation_loss
-  max_steps: 9 # 9 steps is ~ one epoch
+  max_steps: 20
   smaller_is_better: true
 entrypoint: model_def:DetectronTrial
 max_restarts: 0
@@ -17,3 +17,6 @@ bind_mounts:
   - host_path: /home/ubuntu/dtrain-fsx
     container_path: /mnt/dtrain-fsx
     read_only: true
+resources:
+  slots_per_trial: 8
+# min_validation_period: 20

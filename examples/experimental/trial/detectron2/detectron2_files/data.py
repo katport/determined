@@ -22,7 +22,7 @@ from detectron2.data.dataset_mapper import DatasetMapper
 from detectron2.data.detection_utils import check_metadata_consistency
 from detectron2.data.samplers import InferenceSampler, RepeatFactorTrainingSampler, TrainingSampler
 from determined.pytorch import DataLoader
-
+import random
 """
 This file contains the default logic to build a dataloader for training or testing.
 """
@@ -244,6 +244,48 @@ def get_detection_dataset_dicts(
         except AttributeError:  # class names are not available for this dataset
             pass
     return dataset_dicts
+# class TrainingSampler(Sampler):
+    # """
+    # In training, we only care about the "infinite stream" of training data.
+    # So this sampler produces an infinite stream of indices and
+    # all workers cooperate to correctly shuffle the indices and sample different indices.
+    # The samplers in each worker effectively produces `indices[worker_id::num_workers]`
+    # where `indices` is an infinite stream of indices consisting of
+    # `shuffle(range(size)) + shuffle(range(size)) + ...` (if shuffle is True)
+    # or `range(size) + range(size) + ...` (if shuffle is False)
+    # """
+
+    # def __init__(self, size: int, shuffle: bool = True, seed: Optional[int] = None):
+    #     """
+    #     Args:
+    #         size (int): the total number of data of the underlying dataset to sample from
+    #         shuffle (bool): whether to shuffle the indices or not
+    #         seed (int): the initial seed of the shuffle. Must be the same
+    #             across all workers. If None, will use a random seed shared
+    #             among workers (require synchronization among all workers).
+    #     """
+    #     self._size = size
+    #     assert size > 0
+    #     self._shuffle = shuffle
+    #     if seed is None:
+    #         seed = comm.shared_random_seed()
+    #     self._seed = int(seed)
+
+    #     self._rank = comm.get_rank()
+    #     self._world_size = comm.get_world_size()
+
+    # def __iter__(self):
+    #     start = self._rank
+    #     yield from itertools.islice(self._infinite_indices(), start, None, self._world_size)
+
+    # def _infinite_indices(self):
+    #     g = torch.Generator()
+    #     g.manual_seed(self._seed)
+    #     while True:
+    #         if self._shuffle:
+    #             yield from torch.randperm(self._size, generator=g)
+    #         else:
+    #             yield from torch.arange(self._size)
 
 
 class AspectRatioGroupedDatasetBatchSamp():
@@ -268,6 +310,8 @@ class AspectRatioGroupedDatasetBatchSamp():
         self._buckets = [[] for _ in range(2)]
         # Hard-coded two aspect ratio groups: w > h and w < h.
         # Can add support for more aspect ratio groups, but doesn't seem useful
+        self.idxs = [i for i in range(len(dataset))]
+        random.shuffle(self.idxs)
     def __len__(self):
         return len(self.dataset)
 
@@ -285,17 +329,24 @@ class AspectRatioGroupedDatasetBatchSamp():
     #             del bucket[:]
 
     def __iter__(self):
-        print ('IN BATCH SAMPL ITER')
+        # print ('IN BATCH SAMPL ITER')
         
-        for idx, d in enumerate(self.dataset):
+        # for idx, d in enumerate(self.dataset):
+        for idx in self.idxs:
+            d = self.dataset[idx]
             w, h = d["width"], d["height"]
             bucket_id = 0 if w > h else 1
             bucket = self._buckets[bucket_id]
+            # print ('idx: ', idx, 'bucket_id: ', bucket_id ,'og bucket: ', bucket)
             bucket.append(idx)
+            # print ('new bucket: ', bucket)
+            # print ('self._buckets: ', self._buckets[bucket_id])
+
             if len(bucket) == self.batch_size:
-                print ('IN BATCH SAMPL ITER IF: ', len(bucket), bucket[0])
+                # print ('IN BATCH SAMPL ITER IF: ', len(bucket), bucket[0])
                 yield bucket[:]
                 del bucket[:]
+
 
 def build_batch_data_loader(
     dataset, sampler, total_batch_size, *, aspect_ratio_grouping=False, num_workers=0, batch_size=32
@@ -314,14 +365,15 @@ def build_batch_data_loader(
         iterable[list]. Length of each list is the batch size of the current
             GPU. Each element in the list comes from the dataset.
     """
-    world_size = get_world_size()
-    assert (
-        total_batch_size > 0 and total_batch_size % world_size == 0
-    ), "Total batch size ({}) must be divisible by the number of gpus ({}).".format(
-        total_batch_size, world_size
-    )
+    # print ('batch_size: ', batch_size)
+    # world_size = get_world_size()
+    # assert (
+    #     total_batch_size > 0 and total_batch_size % world_size == 0
+    # ), "Total batch size ({}) must be divisible by the number of gpus ({}).".format(
+    #     total_batch_size, world_size
+    # )
 
-    batch_size = total_batch_size // world_size
+    # batch_size = total_batch_size // world_size
     if aspect_ratio_grouping:
         print ('IN data.py returning dataset')
 
