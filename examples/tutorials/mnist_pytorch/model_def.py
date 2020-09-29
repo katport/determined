@@ -17,6 +17,7 @@ from torch import nn
 from layers import Flatten  # noqa: I100
 
 from determined.pytorch import DataLoader, PyTorchTrial, PyTorchTrialContext
+from sklearn.model_selection import KFold
 
 import data
 
@@ -51,6 +52,7 @@ class MNistTrial(PyTorchTrial):
         self.optimizer = self.context.wrap_optimizer(torch.optim.Adadelta(
             self.model.parameters(), lr=self.context.get_hparam("learning_rate"))
         )
+            
 
     def build_training_data_loader(self) -> DataLoader:
         if not self.data_downloaded:
@@ -61,18 +63,24 @@ class MNistTrial(PyTorchTrial):
             self.data_downloaded = True
 
         train_data = data.get_dataset(self.download_directory, train=True)
+        kf = KFold(n_splits=self.context.get_hparam('n_splits'), random_state=self.context.get_hparam('random'), shuffle=False)
+        data_length = [i for i in range(len(train_data))]
+        self.val_data = train_data
+
+        split_group = self.context.get_hparam('split')
+        for i, (train_index, test_index) in enumerate(kf.split(data_length)):
+            if i == split_group:
+                train_data.data = train_data.data[train_index]
+                train_data.targets = train_data.targets[train_index]
+
+                self.val_data.data = self.val_data.data[test_index]
+                self.val_data.targets = self.val_data.targets[test_index]
+                break
         return DataLoader(train_data, batch_size=self.context.get_per_slot_batch_size())
 
     def build_validation_data_loader(self) -> DataLoader:
-        if not self.data_downloaded:
-            self.download_directory = data.download_dataset(
-                download_directory=self.download_directory,
-                data_config=self.context.get_data_config(),
-            )
-            self.data_downloaded = True
 
-        validation_data = data.get_dataset(self.download_directory, train=False)
-        return DataLoader(validation_data, batch_size=self.context.get_per_slot_batch_size())
+        return DataLoader(self.val_data, batch_size=self.context.get_per_slot_batch_size())
 
     def train_batch(
         self, batch: TorchData, epoch_idx: int, batch_idx: int
