@@ -1,0 +1,81 @@
+description: efficientdet
+hyperparameters:
+  global_batch_size: 8 #32
+  root: 'data'
+  dataset: coco
+  model: efficientdet_d0 #tf_efficientdet_d1
+  redundant_bias: None
+  val_skip: 0
+  num_classes: 90 # double check
+  pretrained: False
+  no_pretrained_backbone: False
+  initial_checkpoint: 
+  resume: ''
+  no_resume_opt: False
+  mean: None
+  std: None
+  interpolation: 
+  fill_color: None
+  clip_grad: 10.0
+  opt: momentum
+  opt_eps: 1e_3
+  momentum: 0.9
+  weight_decay: 4e_5
+  sched: cosine
+  lr: 0.01
+  lr_noise: None
+  lr_noise_pct: 0.67
+  lr_noise_std: 1.0
+  lr_cycle_mul: 1.0
+  lr_cycle_limit: 1
+  warmup_lr: 0.0001
+  min_lr: 1e_5
+  epochs: 300
+  start_epoch: None
+  decay_epochs: 30
+  warmup_epochs: 5
+  cooldown_epochs: 10
+  patience_epochs: 10
+  decay_rate: 0.1
+  color_jitter: 0.4
+  aa: None
+  reprob: 0.
+  remode: pixel
+  recount: 1
+  train_interpolation: random
+  smoothing: None
+  jit_loss: None
+  new_focal: None
+  model_ema: False
+  model_ema_decay: 0.9998
+  sync_bn: true
+  dist_bn: 
+  seed: 42
+  log_interval: 50
+  recovery_interval: 0
+  workers: 4
+  save_images: False
+  amp: False
+  apex_amp: False
+  native_amp: False
+  channels_last: False
+  pin_mem: False
+  no_prefetcher: False
+  bench_labeler: False
+  output: 
+  eval_metric: map
+  tta: 0
+searcher:
+  name: single
+  metric: validation_loss
+  max_length:
+      batches: 5
+  smaller_is_better: true
+reproducibility:
+  experiment_seed: 42
+entrypoint: model_def:MNistTrial
+max_restarts: 0
+bind_mounts:
+  - host_path: /home/katie/projects/data/coco
+    container_path: data
+    read_only: True
