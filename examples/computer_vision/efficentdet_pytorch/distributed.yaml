@@ -1,6 +1,6 @@
-description: efficientdet_empty
+description: efficientdet_distributed
 hyperparameters:
-  global_batch_size: 8 #32
+  global_batch_size: 32
   root: 'data'
   dataset: coco
   model: efficientdet_d0 #tf_efficientdet_d1
@@ -9,7 +9,7 @@ hyperparameters:
   num_classes: 90 # double check
   pretrained: False
   no_pretrained_backbone: False
-  # initial_checkpoint: 
+  initial_checkpoint: 
   resume: ''
   no_resume_opt: False
   mean: None
@@ -65,16 +65,19 @@ hyperparameters:
   output: 
   eval_metric: map
   tta: 0
+resources:
+  slots_per_trial: 4
 records_per_epoch: 118287
 searcher:
   name: single
-  metric: val_loss
+  metric: validation_loss
   max_length:
-      batches: 2
-      # epochs: 1
+      epochs: 240
   smaller_is_better: true
 reproducibility:
   experiment_seed: 42
+min_validation_period:
+  epochs: 2
 entrypoint: model_def:MNistTrial
 max_restarts: 0
 bind_mounts:

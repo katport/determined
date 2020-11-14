@@ -53,51 +53,55 @@ class MNistTrial(PyTorchTrial):
 
         self.args = DotDict(self.context.get_hparams())
 
+        # self.args.distributed = int(self.context.get_experiment_config()['resources']['slots_per_trial'])
+
+        print ('dtrian: ', self.args.distributed)
+
         self.args.pretrained_backbone = not self.args.no_pretrained_backbone
         self.args.prefetcher = not self.args.no_prefetcher
 
         print ('num_classes: ', self.args.num_classes, type(self.args.num_classes))
         print ('workers: ', self.args.workers, type(self.args.workers))
 
-        print (self.args)
-        self.model = create_model(
-            self.args.model,
-            bench_task='train',
-            num_classes=self.args.num_classes,
-            pretrained=self.args.pretrained,
-            pretrained_backbone=self.args.pretrained_backbone,
-            redundant_bias=self.args.redundant_bias,
-            label_smoothing=self.args.smoothing,
-            new_focal=self.args.new_focal,
-            jit_loss=self.args.jit_loss,
-            bench_labeler=self.args.bench_labeler,
-            checkpoint_path=self.args.initial_checkpoint,
-        )   
-        self.model_config = self.model.config 
-        self.input_config = resolve_input_config(self.args, model_config=self.model_config)
+        # print (self.args)
+        # self.model = create_model(
+        #     self.args.model,
+        #     bench_task='train',
+        #     num_classes=self.args.num_classes,
+        #     pretrained=self.args.pretrained,
+        #     pretrained_backbone=self.args.pretrained_backbone,
+        #     redundant_bias=self.args.redundant_bias,
+        #     label_smoothing=self.args.smoothing,
+        #     new_focal=self.args.new_focal,
+        #     jit_loss=self.args.jit_loss,
+        #     bench_labeler=self.args.bench_labeler,
+        #     checkpoint_path=self.args.initial_checkpoint,
+        # )   
+        # self.model_config = self.model.config 
+        # self.input_config = resolve_input_config(self.args, model_config=self.model_config)
 
-        self.model = self.context.wrap_model(self.model)
-        print ('Model created, param count:' , self.args.model, sum([m.numel() for m in self.model.parameters()]))
-
+        # self.model = self.context.wrap_model(self.model)
+        # print ('Model created, param count:' , self.args.model, sum([m.numel() for m in self.model.parameters()]))
+        self.model = 
         self.optimizer = self.context.wrap_optimizer(create_optimizer(self.args, self.model))
 
-        self.model_ema = None
-        if self.args.model_ema:
-            # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
-            self.model_ema = ModelEma(self.model, decay=self.args.model_ema_decay)
+        # self.model_ema = None
+        # if self.args.model_ema:
+        #     # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
+        #     self.model_ema = ModelEma(self.model, decay=self.args.model_ema_decay)
 
-        self.lr_scheduler, num_epochs = create_scheduler(self.args, self.optimizer)
-        self.lr_scheduler = self.context.wrap_lr_scheduler(self.lr_scheduler, LRScheduler.StepMode.MANUAL_STEP)
-        self.lr_scheduler.step(0) # 0 start_epoch
-        self.last_epoch = 0
-        self.num_updates  = 0 * self.last_epoch
+        # self.lr_scheduler, self.num_epochs = create_scheduler(self.args, self.optimizer)
+        # self.lr_scheduler = self.context.wrap_lr_scheduler(self.lr_scheduler, LRScheduler.StepMode.MANUAL_STEP)
+        # # self.lr_scheduler.step(0) # 0 start_epoch
+        # self.last_epoch = 0
+        # self.num_updates  = 0 * self.last_epoch
 
-        if self.args.prefetcher:
-            self.train_mean, self.train_std, self.train_random_erasing = self.calculate_means(self.input_config['mean'], self.input_config['std'], self.args.reprob, self.args.remode, self.args.recount)
+        # if self.args.prefetcher:
+        #     self.train_mean, self.train_std, self.train_random_erasing = self.calculate_means(self.input_config['mean'], self.input_config['std'], self.args.reprob, self.args.remode, self.args.recount)
 
-            self.val_mean, self.val_std, self.val_random_erasing = self.calculate_means(self.input_config['mean'], self.input_config['std'])
+        #     self.val_mean, self.val_std, self.val_random_erasing = self.calculate_means(self.input_config['mean'], self.input_config['std'])
         
-        self.amp_autocast = suppress
+        # self.amp_autocast = suppress
 
 
     def calculate_means(self,
@@ -211,11 +215,15 @@ class MNistTrial(PyTorchTrial):
             logging.warning(
                 f'Model {self.model_config.num_classes} has more classes than dataset {loader_train.dataset.parser.max_label}.')
 
+
         self.data_length = len(loader_train)
+        print ('dataset_length: ', len(dataset_train))
+        print ('loader_train: ', self.data_length)
+
         return loader_train
 
     def build_validation_data_loader(self):
-        loader_eval = self._create_loader(
+        self.loader_eval = self._create_loader(
             self.dataset_eval,
             input_size=self.input_config['input_size'],
             batch_size=self.context.get_per_slot_batch_size(),
@@ -230,60 +238,78 @@ class MNistTrial(PyTorchTrial):
             pin_mem=self.args.pin_mem,
             anchor_labeler=self.labeler,
         )
-        return loader_eval
+        self.evaluator = create_evaluator(self.args.dataset, self.loader_eval.dataset, distributed=self.args.distributed, pred_yxyx=False)
+        return self.loader_eval
     
     def clip_grads(self,params):
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
 
-
     def train_batch(self, batch: TorchData, epoch_idx: int, batch_idx: int):
-        # last_batch = batch_idx == last_idx
-        input, target = batch
+        # input, target = batch
 
-        if self.args.prefetcher:
-            input = input.float().sub_(self.train_mean).div_(self.train_std)
-            if self.train_random_erasing is not None:
-                input = self.train_random_erasing(input, target)
+        # if self.args.prefetcher:
+        #     input = input.float().sub_(self.train_mean).div_(self.train_std)
+        #     if self.train_random_erasing is not None:
+        #         input = self.train_random_erasing(input, target)
 
-        if self.args.channels_last:
-            print ('should skip')
-            input = input.contiguous(memory_format=torch.channels_last)
+        # if self.args.channels_last:
+        #     print ('should skip')
+        #     input = input.contiguous(memory_format=torch.channels_last)
 
-        print ('sum: input0: ', torch.sum(input[0]))
-        with self.amp_autocast():
-            output = self.model(input, target)
-        # input=input.float()
-        # output = self.model(input, target)    
-        loss = output['loss']
-
+        # with self.amp_autocast():
+        #     output = self.model(input, target)
+  
+        # loss = output['loss']
+        
         # self.context.backward(loss)
         # self.context.step_optimizer(self.optimizer, self.clip_grads)
 
         # self.num_updates += 1
-
         # if self.lr_scheduler is not None:
         #     self.lr_scheduler.step_update(num_updates=self.num_updates, metric=loss) # metric 
-        #     #is not used
         #     lrl = [param_group['lr'] for param_group in self.optimizer.param_groups]
-        #     # print ('lrl: ', lrl)
         #     if epoch_idx != self.last_epoch:
-        #         print ('new epoch: ', epoch_idx, self.last_epoch)
         #         # step LR for next epoch
         #         self.lr_scheduler.step(epoch_idx + 1, loss)
         #         self.last_epoch = epoch_idx
         #         self.num_updates = epoch_idx * self.data_length
 
-        print ('loss: ', loss.item())
 
-        return {'loss': loss.item(), 'test': 1}
+        return {'loss': 1}
 
-    def evaluate_batch(self, batch: TorchData):
-        # the overhead of evaluating with coco style datasets is fairly high, so just ema or non, not both
-        if model_ema is not None:
-            if self.args.distributed and self.args.dist_bn in ('broadcast', 'reduce'):
-                distribute_bn(model_ema, self.args.world_size, self.args.dist_bn == 'reduce')
+    def evaluate_full_dataset(self, data_loader):
+        # if model_ema is not None:
+        #     # if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
+        #     #     distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
 
-            eval_metrics = validate(model_ema.ema, loader_eval, self.args, evaluator, log_suffix=' (EMA)')
-        else:
-            eval_metrics = validate(model, loader_eval, self.args, evaluator)
-        return {"validation_loss": validation_loss, "accuracy": accuracy}
+        #     eval_metrics = validate(self.model_ema.ema, self.loader_eval, self.args, self.evaluator, log_suffix=' (EMA)')
+        # else:
+
+        # losses_m = AverageMeter()
+
+        # with torch.no_grad():
+        #     for batch_idx, (input, target) in enumerate(data_loader):
+                
+        #         if self.args.prefetcher:
+        #             input = self.context.to_device(input.float()).sub_(self.val_mean).div_(self.val_std)
+
+        #             if self.val_random_erasing is not None:
+        #                 input = self.val_random_erasing(input, target)
+
+        #         target = self.context.to_device(target)
+
+        #         output = self.model(input, target)
+        #         loss = output['loss']
+
+        #         if self.evaluator is not None:
+        #             self.evaluator.add_predictions(output['detections'], target)
+
+        #         reduced_loss = loss.data
+        #         losses_m.update(reduced_loss.item(), input.size(0))
+
+        # metrics = {'loss': losses_m.avg}
+        # if self.evaluator is not None:
+        #     metrics['map'] = float(self.evaluator.evaluate())
+        
+        # print (metrics)
+        return {'val_loss': 1}
