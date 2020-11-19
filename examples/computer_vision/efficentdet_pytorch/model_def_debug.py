@@ -12,8 +12,6 @@ from torchvision import transforms
 import pickle as pkl
 import torchvision
 
-from apex import amp
-
 import torch
 import torchvision.utils
 
@@ -31,17 +29,9 @@ import timm
 import pycocotools
 # torch.backends.cudnn.benchmark = True
 MAX_NUM_INSTANCES = 100
-from timm.utils.model import unwrap_model
+from determined.experimental import Determined
 
-            
-import logging
-from collections import OrderedDict
-from copy import deepcopy
-
-import torch
-from determined.pytorch import DataLoader, PyTorchTrial, PyTorchTrialContext, LRScheduler, PyTorchCallback
-from horovod.torch.sync_batch_norm import SyncBatchNorm
-import sys
+from determined.pytorch import DataLoader, PyTorchTrial, PyTorchTrialContext, LRScheduler
 
 TorchData = Union[Dict[str, torch.Tensor], Sequence[torch.Tensor], torch.Tensor]
 
@@ -63,53 +53,16 @@ class DotDict(dict):
 
 
 TorchData = Union[Dict[str, torch.Tensor], Sequence[torch.Tensor], torch.Tensor]
-import horovod
 
-# class BatchNormCallback(PyTorchCallback):
-#     def __init__(self, context, model_ema=None):
-#         self.model = context.models[0]
-#         self.context = context
-#         self.model_ema = model_ema
-#         # print('self.context.args: ', self.context.models)
-
-#     def on_validation_start(self):
-
-#         print('running validation callback')
-#         # world_size = self.context
-#         world_size = 4
-#         self.distribute_bn(self.model, world_size, 'reduce')
-
-#         if self.model_ema is not None:
-#             print ('running distribute on ema: ', self.model_ema)
-#             self.distribute_bn(self.model_ema, world_size, 'reduce')
-
-
-    # def distribute_bn(self, model, world_size, reduce=False):
-    #     # ensure every node has the same running bn stats
-    #     for bn_name, bn_buf in unwrap_model(model).named_buffers(recurse=True):
-    #         if ('running_mean' in bn_name) or ('running_var' in bn_name):
-    #             if reduce:
-    #                 # average bn stats across whole group
-    #                 print ('bn_buf: ', bn_name,self.context.distributed.get_rank(), bn_buf)
-    #                 bn_buf = horovod.torch.allreduce(bn_buf)
-    #                 # print (output)
-    #                 # bn_buf /= float(world_size)
-    #                 print ('after bn_buf: ', bn_name, self.context.distributed.get_rank(), bn_buf)
-    #                 break
-
-    #             else:
-    #                 # broadcast bn stats from rank 0 to whole group
-    #                 horovod.broadcast(bn_buf, 0)
 
 class EffDetTrial(PyTorchTrial):
     def __init__(self, context: PyTorchTrialContext) -> None:
+        print ('torch: ', torch.__version__)
+        print ('numpy: ', np.__version__)
+        print ('timm: ', timm.__version__)
+        print ('torchvision: ', torchvision.__version__)
 
-        print ('hor: ', horovod.__version__)
-        print ('pyversion: ', sys.version_info)
-        # print ('mpi: ', mpi.__version__)
-
-        
-
+        self.first_val = True
         self.context = context
         self.hparam = self.context.get_hparam
 
@@ -126,12 +79,12 @@ class EffDetTrial(PyTorchTrial):
         self.args.pretrained_backbone = not self.args.no_pretrained_backbone
         self.args.prefetcher = not self.args.no_prefetcher
 
-        tmp = []
-        for arg in self.args.lr_noise.split(' '):
-            tmp.append(float(arg))
-        self.args.lr_noise = tmp
+        print ('num_classes: ', self.args.num_classes, type(self.args.num_classes))
+        print ('workers: ', self.args.workers, type(self.args.workers))
 
         print (self.args)
+
+
         self.model = create_model(
             self.args.model,
             bench_task='train',
@@ -147,26 +100,26 @@ class EffDetTrial(PyTorchTrial):
         )   
         self.model_config = self.model.config 
         self.input_config = resolve_input_config(self.args, model_config=self.model_config)
+
+        # self.model = self.context.wrap_model(self.model)
+
+        if self.hparam('bad_model'):
+            trial = Determined().get_trial(629)
+
+            ckpt = trial.select_checkpoint(latest=True)
+            self.model = ckpt.load().model
         self.model = self.context.wrap_model(self.model)
+
+            # self.model = self.context.to_device(self.model)
 
         print ('Model created, param count:' , self.args.model, sum([m.numel() for m in self.model.parameters()]))
 
         self.optimizer = self.context.wrap_optimizer(create_optimizer(self.args, self.model))
-        print ('Created optimizer: ', self.optimizer)
-        self.model, self.optimizer = self.context.configure_apex_amp(self.model, self.optimizer)
-
-        # print ('pre model: ', self.model)
-        self.model = self.convert_syncbn_model(self.model)
-        # print ('after model: ', self.model)
 
         self.model_ema = None
         if self.args.model_ema:
-            print ('using model ema')
             # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
-            self.model_ema = ModelEma(self.model, context=self.context,decay=self.args.model_ema_decay)
-            # self.model_ema = self.context.to_device(self.model_ema)
-
-
+            self.model_ema = ModelEma(self.model, decay=self.args.model_ema_decay)
 
         self.lr_scheduler, self.num_epochs = create_scheduler(self.args, self.optimizer)
         self.lr_scheduler = self.context.wrap_lr_scheduler(self.lr_scheduler, LRScheduler.StepMode.MANUAL_STEP)
@@ -181,45 +134,7 @@ class EffDetTrial(PyTorchTrial):
         
         self.amp_autocast = suppress
         
-
-    def convert_syncbn_model(self, module, process_group=None, channel_last=False):
-        '''
-        Recursively traverse module and its children to replace all instances of
-        ``torch.nn.modules.batchnorm._BatchNorm`` with :class:`apex.parallel.SyncBatchNorm`.
-
-        All ``torch.nn.BatchNorm*N*d`` wrap around
-        ``torch.nn.modules.batchnorm._BatchNorm``, so this function lets you easily switch
-        to use sync BN.
-
-        Args:
-            module (torch.nn.Module): input module
-
-        Example::
-
-            >>> # model is an instance of torch.nn.Module
-            >>> import apex
-            >>> sync_bn_model = apex.parallel.convert_syncbn_model(model)
-        '''
-        mod = module
-        if isinstance(module, torch.nn.modules.instancenorm._InstanceNorm):
-            return module
-        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-            # mod = SyncBatchNorm(module.num_features, module.eps, module.momentum, module.affine, module.track_running_stats, process_group, channel_last=channel_last)
-            mod = SyncBatchNorm(module.num_features, eps=module.eps, momentum=module.momentum, affine=module.affine, track_running_stats=module.track_running_stats)
-
-            mod.running_mean = module.running_mean
-            mod.running_var = module.running_var
-            if module.affine:
-                mod.weight.data = module.weight.data.clone().detach()
-                mod.bias.data = module.bias.data.clone().detach()
-        for name, child in module.named_children():
-            mod.add_module(name, self.convert_syncbn_model(child,
-                                                    process_group=process_group,
-                                                    channel_last=channel_last))
-        # TODO(jie) should I delete model explicitly?
-        del module
-        return mod
-
+    
     def calculate_means(self,
             mean=IMAGENET_DEFAULT_MEAN,
             std=IMAGENET_DEFAULT_STD,
@@ -234,7 +149,7 @@ class EffDetTrial(PyTorchTrial):
         else:
             random_erasing = None
         
-        # print ('mean: ', mean, 'std: ', std, 'random_erasing: ', random_erasing)
+        print ('mean: ', mean, 'std: ', std, 'random_erasing: ', random_erasing)
         return mean, std, random_erasing
 
     def _create_loader(self,
@@ -367,9 +282,7 @@ class EffDetTrial(PyTorchTrial):
         return self.loader_eval
 
     def clip_grads(self,params):
-        # amp.model
-        # torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-        torch.nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), self.args.clip_grad)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
 
     def train_batch(self, batch: TorchData, epoch_idx: int, batch_idx: int):
 
@@ -386,20 +299,13 @@ class EffDetTrial(PyTorchTrial):
             print ('should skip')
             input = input.contiguous(memory_format=torch.channels_last)
 
-        print ('input shape: ', input.shape)
-
-        # with self.amp_autocast():
-        output = self.model(input, target)
+        with self.amp_autocast():
+            output = self.model(input, target)
   
         loss = output['loss']
         
-
         self.context.backward(loss)
         self.context.step_optimizer(self.optimizer, self.clip_grads)
-        
-
-        if self.model_ema is not None:
-            self.model_ema.update(self.model)
 
         self.num_updates += 1
         if self.lr_scheduler is not None:
@@ -411,7 +317,9 @@ class EffDetTrial(PyTorchTrial):
                 self.last_epoch = epoch_idx
                 self.num_updates = epoch_idx * self.data_length
 
-
+        print ('loss: ', loss)
+        print (output)
+        t = t
         return {"loss": loss}
 
     def evaluate_full_dataset(self, data_loader):
@@ -424,102 +332,53 @@ class EffDetTrial(PyTorchTrial):
             for batch_idx, (input, target) in enumerate(data_loader):
                 if batch_idx % 300 == 0:
                     print ('batch: ', batch_idx, "/", len(data_loader), input.shape)
-                try:
-                    if self.args.prefetcher:
-                        input = input.float().sub_(self.val_mean.cpu()).div_(self.val_std.cpu())
-
-                        if self.val_random_erasing is not None:
-                            print ('in val random erasing')
-                            input = self.val_random_erasing(input, target)
-
-                    input = self.context.to_device(input)
-                    target = self.context.to_device(target)
-
-                    output = self.model_ema.ema(input, target)
-                    loss = output['loss']
-
-                    if self.evaluator is not None:
-                        self.evaluator.add_predictions(output['detections'], target)
-
-                    reduced_loss = loss.data
-                    losses_m.update(reduced_loss.item(), input.size(0))
-                except Exception as e:
-                    print ('failed batch_idx: ', batch_idx)
-                    raise e
                     
+                # try:  
+                if self.args.prefetcher:
+                    input = input.float().sub_(self.val_mean.cpu()).div_(self.val_std.cpu())
 
-        metrics = {'val_loss': losses_m.avg}
-        if self.evaluator is not None:
-            metrics['map'] = float(self.evaluator.evaluate())
+                    if self.val_random_erasing is not None:
+                        print ('in val random erasing')
+                        input = self.val_random_erasing(input, target)
+
+
+                # if self.first_val:
+                bad = {'input': input, 'target': target}
+                filehandler = open("/mnt/data/good_model_data.pkl","wb")
+                pkl.dump(bad,filehandler)
+                filehandler.close()
+                input = self.context.to_device(input)
+                target = self.context.to_device(target)
+
+
+                output = self.model(input, target)
+                loss = output['loss']
+
+                # if self.first_val:
+                #     print (output)
+                #     self.first_val = False
+
+                if self.evaluator is not None:
+                    self.evaluator.add_predictions(output['detections'], target)
+
+                reduced_loss = loss.data
+                losses_m.update(reduced_loss.item(), input.size(0))
+                # except Exception as e:
+                #     print ('failed batch_idx: ', batch_idx)
+                #     print ('shape: ', input.shape, target)
+                #     bad = {'input': input, 'target': target}
+                #     # filehandler = open("/mnt/data/tmp_bad_data.pkl","wb")
+                #     # pkl.dump(bad,filehandler)
+                #     # filehandler.close()
+                #     raise e
+
+                break    
+
+        # metrics = {'val_loss': losses_m.avg}
+        # if self.evaluator is not None:
+        #     metrics['map'] = float(self.evaluator.evaluate())
         
         # print (metrics)
-        return metrics
-    # def build_callbacks(self):
-    #     return {"syncbn": BatchNormCallback(self.context, self.model_ema)}
-class ModelEma:
-    """ Model Exponential Moving Average
-    Keep a moving average of everything in the model state_dict (parameters and buffers).
-    This is intended to allow functionality like
-    https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
-    A smoothed version of the weights is necessary for some training schemes to perform well.
-    E.g. Google's hyper-params for training MNASNet, MobileNet-V3, EfficientNet, etc that use
-    RMSprop with a short 2.4-3 epoch decay period and slow LR decay rate of .96-.99 requires EMA
-    smoothing of weights to match results. Pay attention to the decay constant you are using
-    relative to your update count per epoch.
-    To keep EMA from using GPU resources, set device='cpu'. This will save a bit of memory but
-    disable validation of the EMA weights. Validation will have to be done manually in a separate
-    process, or after the training stops converging.
-    This class is sensitive where it is initialized in the sequence of model init,
-    GPU assignment and distributed training wrappers.
-    I've tested with the sequence in my own train.py for torch.DataParallel, apex.DDP, and single-GPU.
-    """
-    def __init__(self, model, decay=0.9999, context='', resume=''):
-        # make a copy of the model for accumulating moving average of weights
-        self.ema = deepcopy(model)
-        self.ema.eval()
-        self.decay = decay
-        self.context = context
-        # self.device = device  # perform ema on different device from model if set
-        # if device:
-            # self.ema.to(device=device)
-        self.ema_has_module = hasattr(self.ema, 'module')
-        if resume:
-            self._load_checkpoint(resume)
-        for p in self.ema.parameters():
-            p.requires_grad_(False)
+        # return metrics
+        return {'val_loss': 1}
 
-    def _load_checkpoint(self, checkpoint_path):
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        assert isinstance(checkpoint, dict)
-        if 'state_dict_ema' in checkpoint:
-            new_state_dict = OrderedDict()
-            for k, v in checkpoint['state_dict_ema'].items():
-                # ema model may have been wrapped by DataParallel, and need module prefix
-                if self.ema_has_module:
-                    name = 'module.' + k if not k.startswith('module') else k
-                else:
-                    name = k
-                new_state_dict[name] = v
-            self.ema.load_state_dict(new_state_dict)
-            _logger.info("Loaded state_dict_ema")
-        else:
-            _logger.warning("Failed to find state_dict_ema, starting from loaded model weights")
-
-    def update(self, model):
-        # correct a mismatch in state dict keys
-        needs_module = hasattr(model, 'module') and not self.ema_has_module
-        with torch.no_grad():
-            msd = model.state_dict()
-            for k, ema_v in self.ema.state_dict().items():
-                if needs_module:
-                    k = 'module.' + k
-                model_v = msd[k].detach()
-                # if self.device:
-                    # model_v = model_v.to(device=self.device)
-                model_v = self.context.to_device(model_v)
-                ema_v.copy_(ema_v * self.decay + (1. - self.decay) * model_v)
-# print ('shape: ', input.shape, target)
-# bad = {'input': input, 'target': target}
-# filehandler = open("/mnt/data/new_bad_data.pkl","wb")
-# pkl.dump(bad,filehandler)
-# filehandler.close()

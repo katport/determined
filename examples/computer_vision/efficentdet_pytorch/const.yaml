@@ -1,7 +1,7 @@
-description: efficientdet_empty
+description: EffDetTrial_const_new
 hyperparameters:
-  global_batch_size: 8 #32
-  root: 'data'
+  global_batch_size: 16 #32
+  root: '/mnt/data'
   dataset: coco
   model: efficientdet_d0 #tf_efficientdet_d1
   redundant_bias: None
@@ -9,7 +9,7 @@ hyperparameters:
   num_classes: 90 # double check
   pretrained: False
   no_pretrained_backbone: False
-  # initial_checkpoint: 
+  initial_checkpoint: 
   resume: ''
   no_resume_opt: False
   mean: None
@@ -22,8 +22,8 @@ hyperparameters:
   momentum: 0.9
   weight_decay: 4e-5
   sched: cosine
-  lr: 0.01
-  lr_noise: None
+  lr: 0.12
+  lr_noise: 0.4 0.9
   lr_noise_pct: 0.67
   lr_noise_std: 1.0
   lr_cycle_mul: 1.0
@@ -46,8 +46,8 @@ hyperparameters:
   smoothing: None
   jit_loss: None
   new_focal: None
-  model_ema: False
-  model_ema_decay: 0.9998
+  model_ema: True
+  model_ema_decay: 0.9999
   sync_bn: true
   dist_bn: 
   seed: 42
@@ -70,14 +70,17 @@ searcher:
   name: single
   metric: val_loss
   max_length:
-      batches: 2
-      # epochs: 1
-  smaller_is_better: true
+    batches: 2
 reproducibility:
   experiment_seed: 42
-entrypoint: model_def:MNistTrial
+entrypoint: model_def:EffDetTrial
+# min_validation_period:
+#   # epochs: 1
+#    batches: 2
+# min_checkpoint_period:
+#   batches: 1
 max_restarts: 0
 bind_mounts:
   - host_path: /home/katie/projects/data/coco
-    container_path: data
-    read_only: True
+    container_path: /mnt/data/
+    # read_only: True

@@ -1,7 +1,9 @@
 description: efficientdet_distributed
+environment:
+  image: aaron276h/pytorch-1.6
 hyperparameters:
-  global_batch_size: 32
-  root: 'data'
+  global_batch_size: 32 #64
+  root: '/mnt/data'
   dataset: coco
   model: efficientdet_d0 #tf_efficientdet_d1
   redundant_bias: None
@@ -17,13 +19,13 @@ hyperparameters:
   interpolation: 
   fill_color: None
   clip_grad: 10.0
-  opt: momentum
+  opt: sgd #fusedmomentum
   opt_eps: 1e-3
   momentum: 0.9
   weight_decay: 4e-5
   sched: cosine
-  lr: 0.01
-  lr_noise: None
+  lr: 0.12
+  lr_noise: 0.4 0.9
   lr_noise_pct: 0.67
   lr_noise_std: 1.0
   lr_cycle_mul: 1.0
@@ -46,8 +48,8 @@ hyperparameters:
   smoothing: None
   jit_loss: None
   new_focal: None
-  model_ema: False
-  model_ema_decay: 0.9998
+  model_ema: True
+  model_ema_decay: 0.9999
   sync_bn: true
   dist_bn: 
   seed: 42
@@ -65,22 +67,24 @@ hyperparameters:
   output: 
   eval_metric: map
   tta: 0
-resources:
-  slots_per_trial: 4
 records_per_epoch: 118287
 searcher:
   name: single
-  metric: validation_loss
+  metric: val_loss
   max_length:
-      epochs: 240
+      # epochs: 240
+      batches: 2
   smaller_is_better: true
+resources:
+  slots_per_trial: 2
 reproducibility:
   experiment_seed: 42
 min_validation_period:
-  epochs: 2
-entrypoint: model_def:MNistTrial
+  # epochs: 1
+  batches: 100
+entrypoint: model_def:EffDetTrial
 max_restarts: 0
 bind_mounts:
   - host_path: /home/katie/projects/data/coco
-    container_path: data
-    read_only: True
+    container_path: /mnt/data
+    # read_only: True
