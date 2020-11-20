@@ -13,6 +13,7 @@ import pickle as pkl
 import torchvision
 
 from apex import amp
+import horovod
 
 import torch
 import torchvision.utils
@@ -24,103 +25,36 @@ from effdet.data.transforms import *
 from effdet.anchors import Anchors, AnchorLabeler
 from timm.models import resume_checkpoint, load_checkpoint
 from timm.utils import *
+from timm.utils.model import unwrap_model
 from timm.optim import create_optimizer
 from timm.scheduler import create_scheduler
 import numpy as np
-import timm
 import pycocotools
-# torch.backends.cudnn.benchmark = True
-MAX_NUM_INSTANCES = 100
-from timm.utils.model import unwrap_model
 
-            
 import logging
 from collections import OrderedDict
 from copy import deepcopy
 
-import torch
 from determined.pytorch import DataLoader, PyTorchTrial, PyTorchTrialContext, LRScheduler, PyTorchCallback
 from horovod.torch.sync_batch_norm import SyncBatchNorm
 import sys
 
 TorchData = Union[Dict[str, torch.Tensor], Sequence[torch.Tensor], torch.Tensor]
 
-class DotDict(dict):
-    __setattr__ = dict.__setitem__
-    __delattr__ = dict.__delitem__
+MAX_NUM_INSTANCES = 100
 
-    def __init__(self, dct):
-        for key, value in dct.items():
-            if value == 'None':
-                value = None
-            self[key] = value
-    def __getattr__(self, name):
-        try:
-            t = self[name]
-            return t
-        except: 
-            return None
-
-
-TorchData = Union[Dict[str, torch.Tensor], Sequence[torch.Tensor], torch.Tensor]
-import horovod
-
-# class BatchNormCallback(PyTorchCallback):
-#     def __init__(self, context, model_ema=None):
-#         self.model = context.models[0]
-#         self.context = context
-#         self.model_ema = model_ema
-#         # print('self.context.args: ', self.context.models)
-
-#     def on_validation_start(self):
-
-#         print('running validation callback')
-#         # world_size = self.context
-#         world_size = 4
-#         self.distribute_bn(self.model, world_size, 'reduce')
-
-#         if self.model_ema is not None:
-#             print ('running distribute on ema: ', self.model_ema)
-#             self.distribute_bn(self.model_ema, world_size, 'reduce')
-
-
-    # def distribute_bn(self, model, world_size, reduce=False):
-    #     # ensure every node has the same running bn stats
-    #     for bn_name, bn_buf in unwrap_model(model).named_buffers(recurse=True):
-    #         if ('running_mean' in bn_name) or ('running_var' in bn_name):
-    #             if reduce:
-    #                 # average bn stats across whole group
-    #                 print ('bn_buf: ', bn_name,self.context.distributed.get_rank(), bn_buf)
-    #                 bn_buf = horovod.torch.allreduce(bn_buf)
-    #                 # print (output)
-    #                 # bn_buf /= float(world_size)
-    #                 print ('after bn_buf: ', bn_name, self.context.distributed.get_rank(), bn_buf)
-    #                 break
-
-    #             else:
-    #                 # broadcast bn stats from rank 0 to whole group
-    #                 horovod.broadcast(bn_buf, 0)
 
 class EffDetTrial(PyTorchTrial):
     def __init__(self, context: PyTorchTrialContext) -> None:
-
-        print ('hor: ', horovod.__version__)
-        print ('pyversion: ', sys.version_info)
-        # print ('mpi: ', mpi.__version__)
-
-        
-
         self.context = context
         self.hparam = self.context.get_hparam
-
+        self.args = DotDict(self.context.get_hparams())
         # Create a unique download directory for each rank so they don't overwrite each other.
         self.download_directory = f"/tmp/data-rank{self.context.distributed.get_rank()}"
 
-        self.args = DotDict(self.context.get_hparams())
-
-        # slots = int(self.context.get_experiment_config()['resources']['slots_per_trial'])
-        # if slots > 1:
-        #     self.args.distributed = slots
+        slots = int(self.context.get_experiment_config()['resources']['slots_per_trial'])
+        if slots > 1:
+            self.args.distributed = slots
         print ('dtrian: ', self.args.distributed)
 
         self.args.pretrained_backbone = not self.args.no_pretrained_backbone
@@ -149,28 +83,25 @@ class EffDetTrial(PyTorchTrial):
         self.input_config = resolve_input_config(self.args, model_config=self.model_config)
         self.model = self.context.wrap_model(self.model)
 
+        self.model = 
+
         print ('Model created, param count:' , self.args.model, sum([m.numel() for m in self.model.parameters()]))
 
         self.optimizer = self.context.wrap_optimizer(create_optimizer(self.args, self.model))
         print ('Created optimizer: ', self.optimizer)
-        self.model, self.optimizer = self.context.configure_apex_amp(self.model, self.optimizer)
-
-        # print ('pre model: ', self.model)
-        self.model = self.convert_syncbn_model(self.model)
-        # print ('after model: ', self.model)
+        
+        if self.args.amp:
+            self.model, self.optimizer = self.context.configure_apex_amp(self.model, self.optimizer)
 
         self.model_ema = None
         if self.args.model_ema:
             print ('using model ema')
             # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
             self.model_ema = ModelEma(self.model, context=self.context,decay=self.args.model_ema_decay)
-            # self.model_ema = self.context.to_device(self.model_ema)
-
-
 
         self.lr_scheduler, self.num_epochs = create_scheduler(self.args, self.optimizer)
         self.lr_scheduler = self.context.wrap_lr_scheduler(self.lr_scheduler, LRScheduler.StepMode.MANUAL_STEP)
-        # self.lr_scheduler.step(0) # 0 start_epoch
+
         self.last_epoch = 0
         self.num_updates  = 0 * self.last_epoch
 
@@ -179,46 +110,6 @@ class EffDetTrial(PyTorchTrial):
             
             self.val_mean, self.val_std, self.val_random_erasing = self.calculate_means(self.input_config['mean'], self.input_config['std'])
         
-        self.amp_autocast = suppress
-        
-
-    def convert_syncbn_model(self, module, process_group=None, channel_last=False):
-        '''
-        Recursively traverse module and its children to replace all instances of
-        ``torch.nn.modules.batchnorm._BatchNorm`` with :class:`apex.parallel.SyncBatchNorm`.
-
-        All ``torch.nn.BatchNorm*N*d`` wrap around
-        ``torch.nn.modules.batchnorm._BatchNorm``, so this function lets you easily switch
-        to use sync BN.
-
-        Args:
-            module (torch.nn.Module): input module
-
-        Example::
-
-            >>> # model is an instance of torch.nn.Module
-            >>> import apex
-            >>> sync_bn_model = apex.parallel.convert_syncbn_model(model)
-        '''
-        mod = module
-        if isinstance(module, torch.nn.modules.instancenorm._InstanceNorm):
-            return module
-        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-            # mod = SyncBatchNorm(module.num_features, module.eps, module.momentum, module.affine, module.track_running_stats, process_group, channel_last=channel_last)
-            mod = SyncBatchNorm(module.num_features, eps=module.eps, momentum=module.momentum, affine=module.affine, track_running_stats=module.track_running_stats)
-
-            mod.running_mean = module.running_mean
-            mod.running_var = module.running_var
-            if module.affine:
-                mod.weight.data = module.weight.data.clone().detach()
-                mod.bias.data = module.bias.data.clone().detach()
-        for name, child in module.named_children():
-            mod.add_module(name, self.convert_syncbn_model(child,
-                                                    process_group=process_group,
-                                                    channel_last=channel_last))
-        # TODO(jie) should I delete model explicitly?
-        del module
-        return mod
 
     def calculate_means(self,
             mean=IMAGENET_DEFAULT_MEAN,
@@ -226,6 +117,7 @@ class EffDetTrial(PyTorchTrial):
             re_prob=0.,
             re_mode='pixel',
             re_count=1):
+        # We need to precalculate the prefetcher. 
         mean = torch.tensor([x * 255 for x in mean]).cuda().view(1, 3, 1, 1)
         std = torch.tensor([x * 255 for x in std]).cuda().view(1, 3, 1, 1)
         
@@ -234,7 +126,6 @@ class EffDetTrial(PyTorchTrial):
         else:
             random_erasing = None
         
-        # print ('mean: ', mean, 'std: ', std, 'random_erasing: ', random_erasing)
         return mean, std, random_erasing
 
     def _create_loader(self,
@@ -302,7 +193,6 @@ class EffDetTrial(PyTorchTrial):
 
         self.labeler = None
         if not self.args.bench_labeler:
-            print ('using bench labeler')
             self.labeler = AnchorLabeler(
                 Anchors.from_config(self.model_config), self.model_config.num_classes, match_threshold=0.5)
 
@@ -338,7 +228,7 @@ class EffDetTrial(PyTorchTrial):
         self.data_length = len(loader_train)
         print ('train_dataset_length: ', len(dataset_train))
         print ('loader_train: ', self.data_length)
-        print ('num_classes: ', self.model_config.num_classes, loader_train.dataset.parser.max_label )
+        print ('num_classes: ', self.model_config.num_classes)
         return loader_train
 
 
@@ -348,7 +238,7 @@ class EffDetTrial(PyTorchTrial):
         self.loader_eval = self._create_loader(
             self.dataset_eval,
             input_size=self.input_config['input_size'],
-            batch_size=self.args.batch_size,
+            batch_size=self.context.get_per_slot_batch_size(),
             is_training=False,
             use_prefetcher=self.args.prefetcher,
             interpolation=self.input_config['interpolation'],
@@ -360,15 +250,15 @@ class EffDetTrial(PyTorchTrial):
             pin_mem=self.args.pin_mem,
             anchor_labeler=self.labeler,
         )
-        self.evaluator = create_evaluator(self.args.dataset, self.loader_eval.dataset, distributed=self.args.distributed, pred_yxyx=False)
+        
+        # The evaluator will not run distributed
+        self.evaluator = create_evaluator(self.args.dataset, self.loader_eval.dataset, distributed=False, pred_yxyx=False)
 
         print ('train_dataset_length: ', len(self.dataset_eval))
         print ('loader_train: ', self.loader_eval)
         return self.loader_eval
 
     def clip_grads(self,params):
-        # amp.model
-        # torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
         torch.nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), self.args.clip_grad)
 
     def train_batch(self, batch: TorchData, epoch_idx: int, batch_idx: int):
@@ -376,49 +266,41 @@ class EffDetTrial(PyTorchTrial):
         input, target = batch
 
         if self.args.prefetcher:
-            # print ('using prefetcher')
             input = input.float().sub_(self.train_mean).div_(self.train_std)
             if self.train_random_erasing is not None:
-                print ('using random erasing')
                 input = self.train_random_erasing(input, target)
 
         if self.args.channels_last:
-            print ('should skip')
             input = input.contiguous(memory_format=torch.channels_last)
 
-        print ('input shape: ', input.shape)
-
-        # with self.amp_autocast():
         output = self.model(input, target)
   
         loss = output['loss']
         
-
         self.context.backward(loss)
+
+        for name, p in self.model.named_parameters():
+            print(batch_idx, name,'norm: ', p.grad.norm().item(), 'sum: ', p.grad.sum().item(), 'max: ', p.grad.min().item(), 'min: ', p.grad.min().item())
+
         self.context.step_optimizer(self.optimizer, self.clip_grads)
-        
 
         if self.model_ema is not None:
             self.model_ema.update(self.model)
 
         self.num_updates += 1
         if self.lr_scheduler is not None:
-            self.lr_scheduler.step_update(num_updates=self.num_updates, metric=loss) # metric 
+            self.lr_scheduler.step_update(num_updates=self.num_updates) 
             lrl = [param_group['lr'] for param_group in self.optimizer.param_groups]
             if epoch_idx != self.last_epoch:
-                # step LR for next epoch
-                self.lr_scheduler.step(epoch_idx + 1, loss)
+                self.lr_scheduler.step(self.last_epoch + 1)
+                lrl2 = [param_group['lr'] for param_group in self.optimizer.param_groups]
                 self.last_epoch = epoch_idx
                 self.num_updates = epoch_idx * self.data_length
-
 
         return {"loss": loss}
 
     def evaluate_full_dataset(self, data_loader):
         losses_m = AverageMeter()
-
-        # model = self.model.cpu()
-        print ('running val data_loader: ', len(data_loader))
 
         with torch.no_grad():
             for batch_idx, (input, target) in enumerate(data_loader):
@@ -429,7 +311,6 @@ class EffDetTrial(PyTorchTrial):
                         input = input.float().sub_(self.val_mean.cpu()).div_(self.val_std.cpu())
 
                         if self.val_random_erasing is not None:
-                            print ('in val random erasing')
                             input = self.val_random_erasing(input, target)
 
                     input = self.context.to_device(input)
@@ -437,6 +318,7 @@ class EffDetTrial(PyTorchTrial):
 
                     output = self.model_ema.ema(input, target)
                     loss = output['loss']
+                    print ('loss: ', loss)
 
                     if self.evaluator is not None:
                         self.evaluator.add_predictions(output['detections'], target)
@@ -452,10 +334,24 @@ class EffDetTrial(PyTorchTrial):
         if self.evaluator is not None:
             metrics['map'] = float(self.evaluator.evaluate())
         
-        # print (metrics)
         return metrics
-    # def build_callbacks(self):
-    #     return {"syncbn": BatchNormCallback(self.context, self.model_ema)}
+
+class DotDict(dict):
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+    def __init__(self, dct):
+        for key, value in dct.items():
+            if value == 'None':
+                value = None
+            self[key] = value
+    def __getattr__(self, name):
+        try:
+            t = self[name]
+            return t
+        except: 
+            return None
+
 class ModelEma:
     """ Model Exponential Moving Average
     Keep a moving average of everything in the model state_dict (parameters and buffers).
@@ -479,9 +375,6 @@ class ModelEma:
         self.ema.eval()
         self.decay = decay
         self.context = context
-        # self.device = device  # perform ema on different device from model if set
-        # if device:
-            # self.ema.to(device=device)
         self.ema_has_module = hasattr(self.ema, 'module')
         if resume:
             self._load_checkpoint(resume)
@@ -514,12 +407,5 @@ class ModelEma:
                 if needs_module:
                     k = 'module.' + k
                 model_v = msd[k].detach()
-                # if self.device:
-                    # model_v = model_v.to(device=self.device)
                 model_v = self.context.to_device(model_v)
                 ema_v.copy_(ema_v * self.decay + (1. - self.decay) * model_v)
-# print ('shape: ', input.shape, target)
-# bad = {'input': input, 'target': target}
-# filehandler = open("/mnt/data/new_bad_data.pkl","wb")
-# pkl.dump(bad,filehandler)
-# filehandler.close()

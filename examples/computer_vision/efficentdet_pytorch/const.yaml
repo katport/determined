@@ -1,9 +1,9 @@
-description: EffDetTrial_const_new
+description: EffDetTrial_const_new_last_epoch
 hyperparameters:
   global_batch_size: 16 #32
   root: '/mnt/data'
   dataset: coco
-  model: efficientdet_d0 #tf_efficientdet_d1
+  model: tf_efficientdet_d0
   redundant_bias: None
   val_skip: 0
   num_classes: 90 # double check
@@ -14,13 +14,13 @@ hyperparameters:
   no_resume_opt: False
   mean: None
   std: None
-  interpolation: 
+  interpolation: ''
   fill_color: None
   clip_grad: 10.0
-  opt: momentum
-  opt_eps: 1e-3
+  opt: fusedmomentum
+  opt_eps: 0.001
   momentum: 0.9
-  weight_decay: 4e-5
+  weight_decay: 4e-05
   sched: cosine
   lr: 0.12
   lr_noise: 0.4 0.9
@@ -51,13 +51,13 @@ hyperparameters:
   sync_bn: true
   dist_bn: 
   seed: 42
-  log_interval: 50
+  # log_interval: 50
   recovery_interval: 0
   workers: 4
   save_images: False
-  amp: False
-  apex_amp: False
-  native_amp: False
+  amp: True
+  # apex_amp: False
+  # native_amp: False
   channels_last: False
   pin_mem: False
   no_prefetcher: False
@@ -70,13 +70,14 @@ searcher:
   name: single
   metric: val_loss
   max_length:
-    batches: 2
+    # batches: 2
+    epochs: 300
 reproducibility:
   experiment_seed: 42
 entrypoint: model_def:EffDetTrial
-# min_validation_period:
-#   # epochs: 1
-#    batches: 2
+min_validation_period:
+  epochs: 1
+  #  batches: 2
 # min_checkpoint_period:
 #   batches: 1
 max_restarts: 0
