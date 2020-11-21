@@ -1,6 +1,6 @@
 description: EffDetTrial_const_new_last_epoch
 hyperparameters:
-  global_batch_size: 16 #32
+  global_batch_size:  16 #32
   root: '/mnt/data'
   dataset: coco
   model: tf_efficientdet_d0
@@ -48,7 +48,7 @@ hyperparameters:
   new_focal: None
   model_ema: True
   model_ema_decay: 0.9999
-  sync_bn: true
+  sync_bn: False
   dist_bn: 
   seed: 42
   # log_interval: 50

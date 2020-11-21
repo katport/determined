@@ -11,6 +11,7 @@ from torch import nn
 from torchvision import transforms
 import pickle as pkl
 import torchvision
+import math
 
 from apex import amp
 import horovod
@@ -38,6 +39,7 @@ from copy import deepcopy
 from determined.pytorch import DataLoader, PyTorchTrial, PyTorchTrialContext, LRScheduler, PyTorchCallback
 from horovod.torch.sync_batch_norm import SyncBatchNorm
 import sys
+from determined.experimental import Determined
 
 TorchData = Union[Dict[str, torch.Tensor], Sequence[torch.Tensor], torch.Tensor]
 
@@ -52,10 +54,10 @@ class EffDetTrial(PyTorchTrial):
         # Create a unique download directory for each rank so they don't overwrite each other.
         self.download_directory = f"/tmp/data-rank{self.context.distributed.get_rank()}"
 
-        slots = int(self.context.get_experiment_config()['resources']['slots_per_trial'])
-        if slots > 1:
-            self.args.distributed = slots
-        print ('dtrian: ', self.args.distributed)
+        # slots = int(self.context.get_experiment_config()['resources']['slots_per_trial'])
+        # if slots > 1:
+        #     self.args.distributed = slots
+        # print ('dtrian: ', self.args.distributed)
 
         self.args.pretrained_backbone = not self.args.no_pretrained_backbone
         self.args.prefetcher = not self.args.no_prefetcher
@@ -82,8 +84,6 @@ class EffDetTrial(PyTorchTrial):
         self.model_config = self.model.config 
         self.input_config = resolve_input_config(self.args, model_config=self.model_config)
         self.model = self.context.wrap_model(self.model)
-
-        self.model = 
 
         print ('Model created, param count:' , self.args.model, sum([m.numel() for m in self.model.parameters()]))
 
@@ -279,9 +279,6 @@ class EffDetTrial(PyTorchTrial):
         
         self.context.backward(loss)
 
-        for name, p in self.model.named_parameters():
-            print(batch_idx, name,'norm: ', p.grad.norm().item(), 'sum: ', p.grad.sum().item(), 'max: ', p.grad.min().item(), 'min: ', p.grad.min().item())
-
         self.context.step_optimizer(self.optimizer, self.clip_grads)
 
         if self.model_ema is not None:
@@ -318,11 +315,15 @@ class EffDetTrial(PyTorchTrial):
 
                     output = self.model_ema.ema(input, target)
                     loss = output['loss']
-                    print ('loss: ', loss)
 
                     if self.evaluator is not None:
                         self.evaluator.add_predictions(output['detections'], target)
 
+                    if loss is np.nan or math.isnan(loss):
+                        print ('nan batch_idx: ', batch_idx)
+                        for name, p in self.model.named_parameters():
+                            print(batch_idx, name,'norm: ', p.grad.norm().item(), 'sum: ', p.grad.sum().item(), 'max: ', p.grad.min().item(), 'min: ', p.grad.min().item())
+                        continue
                     reduced_loss = loss.data
                     losses_m.update(reduced_loss.item(), input.size(0))
                 except Exception as e:
