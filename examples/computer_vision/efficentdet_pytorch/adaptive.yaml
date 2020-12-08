@@ -1,16 +1,16 @@
-description: EffDetTrial_const
+description: efficientdet_adaptive_loss
 hyperparameters:
-  global_batch_size: 88 #32
-  min_loss_scale: 16.0
-  sync_bn: True
-  amp: True
-  model_ema: True
+  global_batch_size: 16
+  # min_loss_scale:
+  #   type: double
+  #   minval: 8
+  #   maxval: 24
   root: '/mnt/data'
   dataset: coco
-  model: efficientdet_d0
+  model: efficientdet_d0 #tf_efficientdet_d1
   redundant_bias: None
   val_skip: 0
-  num_classes: None #90 # double check
+  num_classes: None # double check
   pretrained: False
   no_pretrained_backbone: False
   initial_checkpoint: None
@@ -20,13 +20,24 @@ hyperparameters:
   std: None
   interpolation: ''
   fill_color: None
-  clip_grad: 10.0
-  opt: fusedmomentum
+  clip_grad:
+    type: double
+    minval: 5.0
+    maxval: 10.0
+  opt:
+    type: categorical
+    vals: ['fusedmomentum','adam', 'momentum', 'adamw']
   opt_eps: 0.001
   momentum: 0.9
-  weight_decay: 4e-05
+  weight_decay: 
+    type: double
+    minval: .00004
+    maxval: .002
   sched: cosine
-  lr: .012 #0.12
+  lr:
+    type: double
+    maxval: 0.8
+    minval: 0.01
   lr_noise: 0.4 0.9
   lr_noise_pct: 0.67
   lr_noise_std: 1.0
@@ -50,39 +61,44 @@ hyperparameters:
   smoothing: None
   jit_loss: None
   new_focal: None
+  model_ema: True
   model_ema_decay: 0.9999
+  sync_bn: False
   dist_bn: ''
   seed: 42
-  # log_interval: 50
   recovery_interval: 0
-  workers: 1 #4
+  workers: 4
   save_images: False
-  # apex_amp: False
-  # native_amp: False
+  amp: True
   channels_last: False
   pin_mem: False
   no_prefetcher: False
   bench_labeler: False
-  output: 
+  output: None
   eval_metric: map
   tta: 0
 records_per_epoch: 118287
 searcher:
-  name: single
+  name: adaptive_asha
   metric: val_loss
   max_length:
-    # batches: 2
-    epochs: 300
+      epochs: 100
+  smaller_is_better: False
+  max_trials: 1000
+  max_concurrent_trials: 4
+resources:
+  slots_per_trial: 1
 reproducibility:
   experiment_seed: 42
+# min_validation_period:
+#   epochs: 1
 entrypoint: model_def:EffDetTrial
-min_validation_period:
-  # epochs: 1
-  batches: 200
-# min_checkpoint_period:
-#   batches: 1
 max_restarts: 0
 bind_mounts:
   - host_path: /home/katie/projects/data/coco
-    container_path: /mnt/data/
-    # read_only: True
+    container_path: /mnt/data
+
+
+# Dropout rate - [0 - 0.5]
+# Learning paramsScheduler - 
+# Augmentation paramsMany of - [‘crop’,’scale’,’jitter’,’rotate’,’flip’]
