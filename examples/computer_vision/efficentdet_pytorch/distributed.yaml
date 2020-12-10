@@ -1,11 +1,15 @@
-description: efficientdet_distributed_default_cycle
+description: efficientdet_distributed_bn_with_fusion
 # environment:
 #   image: aaron276h/pytorch-1.6
 hyperparameters:
-  global_batch_size: 88
+  global_batch_size: 32 #88
   min_loss_scale: 16
-  sync_bn: False
+  sync_bn: True
   model_ema: True
+  amp: True
+  epochs: 300
+
+
   root: '/mnt/data'
   dataset: coco
   model: efficientdet_d0 #tf_efficientdet_d1
@@ -41,7 +45,6 @@ hyperparameters:
   lr_cycle_limit: 1
   warmup_lr: 0.0001
   min_lr: 1e-5
-  epochs: 300
   start_epoch: None
   decay_epochs: 30
   warmup_epochs: 5
@@ -60,16 +63,15 @@ hyperparameters:
   recovery_interval: 0
   workers: 4
   save_images: False
-  amp: True
   channels_last: False
   pin_mem: False
   no_prefetcher: False
   bench_labeler: False
   eval_metric: map
   tta: 0
-# optimizations:
-#    tensor_fusion_threshold: 1
-#    tensor_fusion_cycle_time: 2
+optimizations:
+   tensor_fusion_threshold: 1
+   tensor_fusion_cycle_time: 2
 records_per_epoch: 118287
 searcher:
   name: single
@@ -78,12 +80,12 @@ searcher:
       epochs: 300
   smaller_is_better: true
 resources:
-  slots_per_trial: 4
+  slots_per_trial: 2
 reproducibility:
   experiment_seed: 42
 min_validation_period:
-  epochs: 1
-  # batches: 10
+  # epochs: 1
+  batches: 100
 entrypoint: model_def:EffDetTrial
 max_restarts: 0
 bind_mounts:
