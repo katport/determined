@@ -1,15 +1,17 @@
 description: efficientdet_adaptive_loss
 hyperparameters:
-  global_batch_size: 16
+  global_batch_size: 32
   min_loss_scale:
     type: double
     minval: 8
     maxval: 64
-  epochs: 300
   
-  sync_bn: False
+  sync_bn: 
+    type: categorical
+    vals: [True, False]
   model_ema: True
   amp: True
+  epochs: 300
   
   root: '/mnt/data'
   dataset: coco
@@ -45,7 +47,9 @@ hyperparameters:
     type: double
     minval: .00004
     maxval: .002
-  sched: cosine
+  sched: 
+    type: categorical
+    vals: ['cosine', 'tanh', 'step']
   lr:
     type: double
     maxval: 0.3
@@ -88,21 +92,17 @@ searcher:
   max_length:
       epochs: 300
   smaller_is_better: False
-  max_trials: 500
-  max_concurrent_trials: 4
+  max_trials: 1000
+  max_concurrent_trials: 2
 resources:
-  slots_per_trial: 1
+  slots_per_trial: 2
 reproducibility:
   experiment_seed: 42
-# min_validation_period:
-#   epochs: 1
+optimizations:
+   tensor_fusion_threshold: 1
+   tensor_fusion_cycle_time: 2
 entrypoint: model_def:EffDetTrial
 max_restarts: 0
 bind_mounts:
   - host_path: /home/katie/projects/data/coco
     container_path: /mnt/data
-
-
-# Dropout rate - [0 - 0.5]
-# Learning paramsScheduler - 
-# Augmentation paramsMany of - [‘crop’,’scale’,’jitter’,’rotate’,’flip’]

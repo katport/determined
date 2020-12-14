@@ -9,7 +9,6 @@ hyperparameters:
   amp: True
   epochs: 300
 
-
   root: '/mnt/data'
   dataset: coco
   model: efficientdet_d0 #tf_efficientdet_d1
@@ -80,12 +79,12 @@ searcher:
       epochs: 300
   smaller_is_better: true
 resources:
-  slots_per_trial: 2
+  slots_per_trial: 4
 reproducibility:
   experiment_seed: 42
 min_validation_period:
   # epochs: 1
-  batches: 100
+  batches: 10
 entrypoint: model_def:EffDetTrial
 max_restarts: 0
 bind_mounts:

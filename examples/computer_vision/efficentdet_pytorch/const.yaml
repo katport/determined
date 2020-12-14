@@ -1,8 +1,8 @@
 description: EffDetTrial_const
 hyperparameters:
-  global_batch_size: 88 #32
+  global_batch_size: 16 #32
   min_loss_scale: 16.0
-  sync_bn: True
+  sync_bn: False
   amp: True
   model_ema: True
   root: '/mnt/data'
@@ -78,7 +78,7 @@ reproducibility:
 entrypoint: model_def:EffDetTrial
 min_validation_period:
   # epochs: 1
-  batches: 200
+  batches: 10
 # min_checkpoint_period:
 #   batches: 1
 max_restarts: 0

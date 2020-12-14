@@ -20,6 +20,7 @@ import apex
 from apex import amp
 import horovod
 from determined import pytorch
+import math
 
 from pycocotools.cocoeval import COCOeval
 import effdet.evaluation.detection_evaluator as tfm_eval
@@ -62,11 +63,6 @@ class EffDetTrial(PyTorchTrial):
         # Create a unique download directory for each rank so they don't overwrite each other.
         self.download_directory = f"/tmp/data-rank{self.context.distributed.get_rank()}"
         self.num_slots = int(self.context.get_experiment_config()['resources']['slots_per_trial'])
-
-        # slots = int(self.context.get_experiment_config()['resources']['slots_per_trial'])
-        # if slots > 1:
-        #     self.args.distributed = slots
-        # print ('dtrian: ', self.args.distributed)
 
         self.args.pretrained_backbone = not self.args.no_pretrained_backbone
         self.args.prefetcher = not self.args.no_prefetcher
@@ -141,7 +137,7 @@ class EffDetTrial(PyTorchTrial):
             
             self.val_mean, self.val_std, self.val_random_erasing = self.calculate_means(self.input_config['mean'], self.input_config['std'])
 
-        self.val_reducer = self.context.experimental.wrap_reducer(validation_reducer, name="val_reducer")
+        self.val_reducer = self.context.experimental.wrap_reducer(self.validation_reducer, name="val_reducer", for_training=False)
 
         
     def build_callbacks(self) :
@@ -350,8 +346,6 @@ class EffDetTrial(PyTorchTrial):
         return {"loss": loss}
 
     def evaluate_batch(self, batch: TorchData):
-        print ('STARTING EVAL preds')
-
         input, target = batch
         if self.args.prefetcher:
             input = input.float().sub_(self.val_mean).div_(self.val_std)
@@ -376,14 +370,11 @@ class EffDetTrial(PyTorchTrial):
         if self.evaluator is not None:
             self.evaluator.add_predictions(output['detections'], target)
 
-        print ('PRINTING adding preds')
         vals = (self.evaluator.img_indices, self.evaluator.predictions)
         self.val_reducer.update(vals)
         self.evaluator.reset()
 
-
         return {'val_loss': reduced_loss}   
-
 
     def create_evaluator(self,name, dataset, pred_yxyx=False):
         if 'coco' in name:
@@ -425,22 +416,80 @@ class EffDetTrial(PyTorchTrial):
         del module
         return mod
 
-def validation_reducer(self, values):
+    def validation_reducer(self, values):
 
-    print ('In reducer ', type(values))
+        concat_imgs, concat_pred = zip(*values)
+        
+        new_concat_imgs = []
+        for val in concat_imgs:
+            new_concat_imgs.extend(val)
+        
+        new_concat_pred = []
+        for val in concat_pred:
+            new_concat_pred.extend(val)
 
-    print ('values: ', type(values[0]))
-    t =t 
-    concat_imgs = concat_imgs.numpy()
-    concat_pred = concat_pred.numpy()
+        self.evaluator.img_indices = new_concat_imgs
+        self.evaluator.predictions = new_concat_pred
+        metrics_map = float(self.evaluator.evaluate())
+        print ('ran the metrics: ', metrics_map)
+        self.evaluator.reset()
+        return {'map': metrics_map}
 
-    self.evaluator.img_indices = concat_imgs
-    self.evaluator.predictions = concat_pred
-    metrics_map = float(self.evaluator.evaluate())
-    print ('ran the metrics: ', metrics_map)
-    self.evaluator.reset()
-    return {'map': metrics_map}
+    # def evaluate_batch(self, batch: TorchData):
+    #     input, target = batch
+    #     if self.args.prefetcher:
+    #         input = input.float().sub_(self.val_mean).div_(self.val_std)
 
+    #     if self.val_random_erasing is not None:
+    #         input = self.val_random_erasing(input, target)
+
+    #     input = self.context.to_device(input)
+    #     target = self.context.to_device(target)
+
+    #     output = self.model_ema.ema(input, target)
+    #     loss = output['loss']
+
+    #     if self.evaluator is not None:
+    #         self.evaluator.add_predictions(output['detections'], target)
+
+    #     reduced_loss = loss.data.item()
+        
+    #     self.eval_counter += 1
+
+    #     if reduced_loss is np.nan or math.isnan(reduced_loss):
+    #         print ('nan',reduced_loss, self.context.distributed.get_rank())
+    #         for name, p in self.model.named_parameters():
+    #             print(name,'norm: ', p.grad.norm().item(), 'sum: ', p.grad.sum().item(), 'max: ', p.grad.min().item(), 'min: ', p.grad.min().item())
+    #         reduced_loss = 0
+
+    #     # print (self.eval_counter, len(self.loader_eval)/self.num_slots)
+    #     if self.eval_counter == math.floor(len(self.loader_eval)/self.num_slots) and self.evaluator is not None:
+
+    #         local_imgs = torch.Tensor(self.evaluator.img_indices).type(torch.IntTensor)
+    #         local_predictions = torch.Tensor(self.evaluator.predictions)
+    #         self.evaluator.reset()
+    #         self.eval_counter = 0
+
+    #         # print ('rank: ', self.context.distributed.get_rank(), 'localimgs: ', len(local_imgs))
+    #         concat_imgs = horovod.torch.allgather(local_imgs)
+    #         concat_pred = horovod.torch.allgather(local_predictions)
+    #         # sync point
+
+    #         # print ('rank: ', self.context.distributed.get_rank(), len(concat_imgs))
+    #         if self.context.distributed.get_rank() == 0:
+    #             concat_imgs = concat_imgs.numpy()
+    #             concat_pred = concat_pred.numpy()
+
+    #             self.evaluator.img_indices = concat_imgs
+    #             self.evaluator.predictions = concat_pred
+                
+    #             metrics_map = float(self.evaluator.evaluate())
+    #             print ('ran the metrics: ', metrics_map)
+    #             self.evaluator.reset()
+
+    #             return {'val_loss':reduced_loss, 'map' : metrics_map*len(self.loader_eval)}
+
+    #     return {'val_loss': reduced_loss, 'map': 0}
 class DotDict(dict):
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
@@ -644,60 +693,7 @@ class ModelEma:
         
     #     return metrics
 
-    # def evaluate_batch(self, batch: TorchData):
-    #     input, target = batch
-    #     if self.args.prefetcher:
-    #         input = input.float().sub_(self.val_mean).div_(self.val_std)
 
-    #     if self.val_random_erasing is not None:
-    #         input = self.val_random_erasing(input, target)
-
-    #     input = self.context.to_device(input)
-    #     target = self.context.to_device(target)
-
-    #     output = self.model_ema.ema(input, target)
-    #     loss = output['loss']
-
-    #     if self.evaluator is not None:
-    #         self.evaluator.add_predictions(output['detections'], target)
-
-    #     reduced_loss = loss.data.item()
-        
-    #     self.eval_counter += 1
-
-    #     if reduced_loss is np.nan or math.isnan(reduced_loss):
-    #         print ('nan',reduced_loss, self.context.distributed.get_rank())
-    #         for name, p in self.model.named_parameters():
-    #             print(batch_idx, name,'norm: ', p.grad.norm().item(), 'sum: ', p.grad.sum().item(), 'max: ', p.grad.min().item(), 'min: ', p.grad.min().item())
-    #         reduced_loss = 0
-
-    #     if self.eval_counter == len(self.loader_eval)/self.num_slots and self.evaluator is not None:
-
-    #         local_imgs = torch.Tensor(self.evaluator.img_indices).type(torch.IntTensor)
-    #         local_predictions = torch.Tensor(self.evaluator.predictions)
-    #         self.evaluator.reset()
-    #         self.eval_counter = 0
-
-    #         # print ('rank: ', self.context.distributed.get_rank(), 'localimgs: ', len(local_imgs))
-    #         concat_imgs = horovod.torch.allgather(local_imgs)
-    #         concat_pred = horovod.torch.allgather(local_predictions)
-    #         # sync point
-
-    #         # print ('rank: ', self.context.distributed.get_rank(), len(concat_imgs))
-    #         if self.context.distributed.get_rank() == 0:
-    #             concat_imgs = concat_imgs.numpy()
-    #             concat_pred = concat_pred.numpy()
-
-    #             self.evaluator.img_indices = concat_imgs
-    #             self.evaluator.predictions = concat_pred
-                
-    #             metrics_map = float(self.evaluator.evaluate())
-    #             print ('ran the metrics: ', metrics_map)
-    #             self.evaluator.reset()
-
-    #             return {'val_loss':reduced_loss, 'map' : metrics_map*len(self.loader_eval)}
-
-    #     return {'val_loss': reduced_loss, 'map': 0}
         
         # gradient= None,
         # retain_graph = False
