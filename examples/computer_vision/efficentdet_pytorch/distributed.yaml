@@ -1,28 +1,22 @@
-description: efficientdet_distributed_bn_with_fusion
-# environment:
-#   image: aaron276h/pytorch-1.6
+description: efficientdet_distributed
 hyperparameters:
-  global_batch_size: 32 #88
+  global_batch_size: 88
   min_loss_scale: 16
   sync_bn: True
   model_ema: True
   amp: True
-  epochs: 300
-
   root: '/mnt/data'
   dataset: coco
-  model: efficientdet_d0 #tf_efficientdet_d1
+  model: efficientdet_d0
   redundant_bias: None
   val_skip: 0
   num_classes: None
   pretrained: False
   no_pretrained_backbone: False
-
   model_ema_decay: 0.9999
   initial_checkpoint: None
   dist_bn: None
   output: None
-
   decay_rate: 0.1
   resume: ''
   no_resume_opt: False
@@ -68,6 +62,7 @@ hyperparameters:
   bench_labeler: False
   eval_metric: map
   tta: 0
+  epochs: 300 # used for LR calculations:update according to max_length
 optimizations:
    tensor_fusion_threshold: 1
    tensor_fusion_cycle_time: 2
@@ -83,8 +78,7 @@ resources:
 reproducibility:
   experiment_seed: 42
 min_validation_period:
-  # epochs: 1
-  batches: 10
+  epochs: 1
 entrypoint: model_def:EffDetTrial
 max_restarts: 0
 bind_mounts:

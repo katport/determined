@@ -7,9 +7,6 @@ cp -pv /run/determined/workdir/patch/_trial_controller.py /run/determined/python
 cp -pv /run/determined/workdir/patch/pytorch_context.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/_pytorch_context.py
 cp -pv /run/determined/workdir/patch/reducer.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/_reducer.py
 
-
-# echo HOROVOD_CYCLE_TIME
-# export HOROVOD_CYCLE_TIME=2
 pip install timm
 git clone https://github.com/rwightman/efficientdet-pytorch.git
 cd efficientdet-pytorch
