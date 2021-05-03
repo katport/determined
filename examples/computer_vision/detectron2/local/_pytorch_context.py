@@ -6,8 +6,8 @@ import torch.nn as nn
 
 import determined as det
 from determined import pytorch
+from determined.common import check
 from determined.horovod import hvd
-from determined_common import check
 
 _worker_init_fn_t = Optional[Callable[[int], None]]
 T = TypeVar("T")
@@ -59,7 +59,7 @@ class PyTorchTrialContext(det.TrialContext):
         # The following attributes are initialized during the lifetime of
         # a PyTorchTrialContext.
         self.models = []  # type: List[nn.Module]
-        self.optimizers = []  # type: List[torch.optim.Optimizer] #  type: ignore
+        self.optimizers = []  # type: List[torch.optim.Optimizer]
         self.lr_schedulers = []  # type: List[pytorch.LRScheduler]
         self._epoch_len = None  # type: Optional[int]
 
@@ -69,7 +69,7 @@ class PyTorchTrialContext(det.TrialContext):
         # different names using __setattr__ and use the state_dict of the main model
         # for broadcasting. Note that broadcast_parameters only accepts state_dict()
         # although its doc says it also accepts named_parameters()
-        self._main_model = nn.Module()  # type: nn.Module
+        self._main_model = nn.Module()
         self._scaler = None
         self._use_apex = False
         self._loss_ids = {}  # type: Dict[torch.Tensor, int]
@@ -95,7 +95,7 @@ class PyTorchTrialContext(det.TrialContext):
                 return delattr(to_wrap, name)
 
             def forward(wrapper, *arg, **kwarg):  # type: ignore
-                with amp.autocast():
+                with amp.autocast():  # type: ignore
                     return to_wrap.forward(*arg, **kwarg)
 
         wrapped = _AutocastForwardPassModel()
@@ -158,9 +158,9 @@ class PyTorchTrialContext(det.TrialContext):
 
     def wrap_optimizer(
         self,
-        optimizer: torch.optim.Optimizer,  # type: ignore
+        optimizer: torch.optim.Optimizer,
         backward_passes_per_step: int = 1,
-    ) -> torch.optim.Optimizer:  # type: ignore
+    ) -> torch.optim.Optimizer:
         """Returns a wrapped optimizer.
         The optimizer must use the models wrapped by :meth:`wrap_model`. This function
         creates a ``horovod.DistributedOptimizer`` if using parallel/distributed training.
@@ -209,6 +209,7 @@ class PyTorchTrialContext(det.TrialContext):
         self,
         lr_scheduler: torch.optim.lr_scheduler._LRScheduler,
         step_mode: pytorch.LRScheduler.StepMode,
+        frequency: int = 1,
     ) -> torch.optim.lr_scheduler._LRScheduler:
         """
         Returns a wrapped LR scheduler.
@@ -241,14 +242,14 @@ class PyTorchTrialContext(det.TrialContext):
                 self.optimizers,
                 "Must use an optimizer that is returned by wrap_optimizer()",
             )
-        wrapped = pytorch.LRScheduler(lr_scheduler, step_mode)
+        wrapped = pytorch.LRScheduler(lr_scheduler, step_mode, frequency)
         self.lr_schedulers.append(wrapped)
 
         # Return the original LR scheduler to the user in case they have customizations that we
         # don't care about.
         return lr_scheduler
 
-    def _filter_named_parameters(self, optimizer: torch.optim.Optimizer) -> List:  # type: ignore
+    def _filter_named_parameters(self, optimizer: torch.optim.Optimizer) -> List:
         """_filter_named_parameters filters the named parameters of a specified optimizer out
         of all the named parameters from a specified model. We need this function because
         a ``torch.optim.Optimizer`` doesn't store parameter names and we need the names of
@@ -313,7 +314,7 @@ class PyTorchTrialContext(det.TrialContext):
     def configure_apex_amp(
         self,
         models: Union[torch.nn.Module, List[torch.nn.Module]],
-        optimizers: Union[torch.optim.Optimizer, List[torch.optim.Optimizer]],  # type: ignore
+        optimizers: Union[torch.optim.Optimizer, List[torch.optim.Optimizer]],
         enabled: Optional[bool] = True,
         opt_level: Optional[str] = "O1",
         cast_model_type: Optional[torch.dtype] = None,
@@ -505,7 +506,7 @@ class PyTorchTrialContext(det.TrialContext):
                     # to integrate torch native AMP (https://pytorch.org/docs/stable/amp.html),
                     # which will come out soon.
                     for optimizer in self.optimizers:
-                        optimizer.synchronize()
+                        optimizer.synchronize()  # type: ignore
         else:
             if self._scaler and self.experimental._auto_amp:
                 loss = self._scaler.scale(loss)
@@ -527,7 +528,7 @@ class PyTorchTrialContext(det.TrialContext):
 
     def step_optimizer(
         self,
-        optimizer: torch.optim.Optimizer,  # type: ignore
+        optimizer: torch.optim.Optimizer,
         clip_grads: Optional[Callable[[Iterator], None]] = None,
         auto_zero_grads: bool = True,
         scaler: Optional[Any] = None,
@@ -574,7 +575,7 @@ class PyTorchTrialContext(det.TrialContext):
         # this is called in backward() instead, so that it's inside the context
         # manager and before unscaling.
         if self.hvd_config.use and not self._use_apex:
-            optimizer.synchronize()
+            optimizer.synchronize()  # type: ignore
 
         parameters = (
             [p for group in optimizer.param_groups for p in group.get("params", [])]
@@ -602,10 +603,10 @@ class PyTorchTrialContext(det.TrialContext):
                 scaler.step(optimizer)  # type: ignore
 
         else:
-            step_fn = optimizer.step
+            step_fn = optimizer.step  # type: ignore
 
         if self.hvd_config.use:
-            with optimizer.skip_synchronize():
+            with optimizer.skip_synchronize():  # type: ignore
                 step_fn()
         else:
             step_fn()
@@ -636,3 +637,18 @@ class PyTorchTrialContext(det.TrialContext):
         if self._epoch_len is None:
             raise det.errors.InternalException("Training DataLoader uninitialized.")
         return self._current_batch_idx % self._epoch_len == self._epoch_len - 1
+
+    def current_train_epoch(self) -> int:
+        if self._current_batch_idx is None:
+            raise det.errors.InternalException("Training hasn't started.")
+        if self._epoch_len is None:
+            raise det.errors.InternalException("Training DataLoader uninitialized.")
+        return self._current_batch_idx // self._epoch_len
+
+    def current_train_batch(self) -> int:
+        """
+        Current global batch index
+        """
+        if self._current_batch_idx is None:
+            raise det.errors.InternalException("Training hasn't started.")
+        return self._current_batch_idx

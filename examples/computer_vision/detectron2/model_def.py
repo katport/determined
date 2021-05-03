@@ -22,7 +22,7 @@ from detectron2.data.dataset_mapper import DatasetMapper
 from data import *
 from detectron2.data.common import MapDataset
 
-
+print ("CUDA AVAILABLE: ",  torch.cuda.is_available())
 
 TorchData = Union[Dict[str, torch.Tensor], Sequence[torch.Tensor], torch.Tensor]
 

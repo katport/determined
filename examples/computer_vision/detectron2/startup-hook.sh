@@ -1,11 +1,25 @@
-cp -pv /run/determined/workdir/local/__init__.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/__init__.py
-cp -pv /run/determined/workdir/local/_data.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/_data.py
 
-cp -pv /run/determined/workdir/local/_pytorch_context.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/_pytorch_context.py
-cp -pv /run/determined/workdir/local/_pytorch_trial.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/_pytorch_trial.py
+# # ls /run/determined/pythonuserbase/lib
+cp -pv /run/determined/workdir/local/__init__.py /run/determined/pythonuserbase/lib/python3.7/site-packages/determined/pytorch/__init__.py
+cp -pv /run/determined/workdir/local/_data.py /run/determined/pythonuserbase/lib/python3.7/site-packages/determined/pytorch/_data.py
 
-cp -pv /run/determined/workdir/local/_train_context.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/_train_context.py
-cp -pv /run/determined/workdir/local/samplers.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/samplers.py
+cp -pv /run/determined/workdir/local/_pytorch_context.py /run/determined/pythonuserbase/lib/python3.7/site-packages/determined/pytorch/_pytorch_context.py
+cp -pv /run/determined/workdir/local/_pytorch_trial.py /run/determined/pythonuserbase/lib/python3.7/site-packages/determined/pytorch/_pytorch_trial.py
+
+cp -pv /run/determined/workdir/local/_train_context.py /run/determined/pythonuserbase/lib/python3.7/site-packages/determined/_train_context.py
+cp -pv /run/determined/workdir/local/samplers.py /run/determined/pythonuserbase/lib/python3.7/site-packages/determined/pytorch/samplers.py
+
+
+
+
+# cp -pv /run/determined/workdir/local/__init__.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/__init__.py
+# cp -pv /run/determined/workdir/local/_data.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/_data.py
+
+# cp -pv /run/determined/workdir/local/_pytorch_context.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/_pytorch_context.py
+# cp -pv /run/determined/workdir/local/_pytorch_trial.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/_pytorch_trial.py
+
+# cp -pv /run/determined/workdir/local/_train_context.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/_train_context.py
+# cp -pv /run/determined/workdir/local/samplers.py /run/determined/pythonuserbase/lib/python3.6/site-packages/determined/pytorch/samplers.py
 
 export DETECTRON2_DATASETS=/mnt/dtrain-fsx/detectron2
 
@@ -19,10 +33,10 @@ export DETECTRON2_DATASETS=/mnt/dtrain-fsx/detectron2
 
 
 # Uncomment if running without a container:
-# pip install cython
-# pip install pycocotools
-# # # python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
-# python -m pip install 'git+https://github.com/katport/detectron2_fork.git@e26ceda0a8c8ce68337926a767dbf5a86e215335'
+pip install cython
+pip install pycocotools
+# python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'
+python -m pip install 'git+https://github.com/katport/detectron2_fork.git@e26ceda0a8c8ce68337926a767dbf5a86e215335'
 
 # git clone https://github.com/facebookresearch/detectron2.git
 
@@ -37,3 +51,11 @@ export DETECTRON2_DATASETS=/mnt/dtrain-fsx/detectron2
 # cd ../../../../
 
 # ./prepare_for_tests.sh
+
+
+# wget -O - https://fsx-lustre-client-repo-public-keys.s3.amazonaws.com/fsx-ubuntu-public-key.asc | sudo apt-key add -
+# sudo bash -c 'echo "deb https://fsx-lustre-client-repo.s3.amazonaws.com/ubuntu focal main" > /etc/apt/sources.list.d/fsxlustreclientrepo.list && apt-get update'
+# sudo apt install -y lustre-client-modules-$(uname -r)
+# sudo apt-cache search ^lustre
+# mkdir fsx
+# sudo mount -t lustre -o noatime,flock fs-0070d44fe131979c5.fsx.us-east-1.amazonaws.com@tcp:/moye7bmv /home/ubuntu/fsx

@@ -89,8 +89,7 @@ from typing import Iterator
 
 import numpy as np
 import torch
-
-from determined_common import check
+from determined.common import check
 
 
 class RepeatSampler(torch.utils.data.Sampler):

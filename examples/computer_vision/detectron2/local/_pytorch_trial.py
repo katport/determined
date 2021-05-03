@@ -4,14 +4,14 @@ import random
 from abc import abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
-import cloudpickle
 import numpy as np
 import torch
 
 import determined as det
 from determined import horovod, ipc, pytorch, util, workload
+from determined.common import check
 from determined.horovod import hvd
-from determined_common import check
+from determined.util import has_param
 
 # Apex is included only for GPU trials.
 try:
@@ -77,7 +77,7 @@ class PyTorchTrialController(det.LoopTrialController):
         # training batch.
         random.seed(seed)
         np.random.seed(seed)
-        torch.random.manual_seed(seed)  # type: ignore
+        torch.random.manual_seed(seed)
         # TODO(Aaron): Add flag to enable determinism.
         # torch.backends.cudnn.deterministic = True
         # torch.backends.cudnn.benchmark = False
@@ -109,7 +109,7 @@ class PyTorchTrialController(det.LoopTrialController):
             self._evaluate_batch_defined(),
             self._evaluate_full_dataset_defined(),
             "Please define exactly one of: `evaluate_batch()` or `evaluate_full_dataset()`. "
-            "For most use cases `evaluate_batch()` is recommended is recommended because "
+            "For most use cases `evaluate_batch()` is recommended because "
             "it can be parallelized across all devices.",
         )
 
@@ -273,9 +273,10 @@ class PyTorchTrialController(det.LoopTrialController):
         This function aims at automatically step a LR scheduler. It should be called per batch.
         """
         if lr_scheduler._step_mode == pytorch.LRScheduler.StepMode.STEP_EVERY_BATCH:
-            lr_scheduler.step()
+            if (batch_idx + 1) % lr_scheduler._frequency == 0:
+                lr_scheduler.step()
         elif lr_scheduler._step_mode == pytorch.LRScheduler.StepMode.STEP_EVERY_EPOCH:
-            mod = (batch_idx + 1) % len(self.training_loader)
+            mod = (batch_idx + 1) % (len(self.training_loader) * lr_scheduler._frequency)
             if mod == 0 or mod < self.hvd_config.aggregation_frequency:
                 lr_scheduler.step()
 
@@ -305,10 +306,18 @@ class PyTorchTrialController(det.LoopTrialController):
 
         for batch_idx in range(start, end):
             batch = next(self.training_iterator)
-            num_inputs += pytorch.data_length(batch)
-            batch = self.context.to_device(batch)
+
+            ## old code:
+            # num_inputs += pytorch.data_length(batch)
+            # batch = self.context.to_device(batch)
+
+            num_inputs += self.trial._records_in_batch(batch)
+            batch = self.trial._batch_to_device(batch, self.context)
 
             self.context._current_batch_idx = batch_idx
+            if self.context.is_epoch_start():
+                for callback in self.callbacks.values():
+                    callback.on_training_epoch_start()
             self.context._loss_ids = {}
             tr_metrics = self.trial.train_batch(
                 batch=batch,
@@ -370,7 +379,7 @@ class PyTorchTrialController(det.LoopTrialController):
                 metrics[metric_name] = metric_val.cpu().numpy()
         return metrics
 
-    @torch.no_grad()
+    @torch.no_grad()  # type: ignore
     def _compute_validation_metrics(self) -> workload.Response:
         self.context.experimental.reset_reducers()
         # Set the behavior of certain layers (e.g., dropout) that are
@@ -396,11 +405,16 @@ class PyTorchTrialController(det.LoopTrialController):
 
             self.validation_loader = cast(torch.utils.data.DataLoader, self.validation_loader)
             check.gt(len(self.validation_loader), 0)
-            for batch in self.validation_loader:
+            for callback in self.callbacks.values():
+                callback.on_validation_epoch_start()
+            for idx, batch in enumerate(self.validation_loader):
                 batch = self.context.to_device(batch)
                 num_inputs += pytorch.data_length(batch)
 
-                vld_metrics = self.trial.evaluate_batch(batch=batch)
+                if has_param(self.trial.evaluate_batch, "batch_idx", 2):
+                    vld_metrics = self.trial.evaluate_batch(batch=batch, batch_idx=idx)
+                else:
+                    vld_metrics = self.trial.evaluate_batch(batch=batch)  # type: ignore
                 # Verify validation metric names are the same across batches.
                 if keys is None:
                     keys = vld_metrics.keys()
@@ -421,6 +435,9 @@ class PyTorchTrialController(det.LoopTrialController):
                 batch_metrics.append(self._convert_metrics_to_numpy(vld_metrics))
                 if self.env.test_mode:
                     break
+
+            for callback in self.callbacks.values():
+                callback.on_validation_epoch_end(batch_metrics)
 
             metrics = self._reduce_metrics(
                 batch_metrics=batch_metrics,
@@ -590,11 +607,17 @@ class PyTorchTrialController(det.LoopTrialController):
             ["checkpoint.pt"],
         ]
 
+        checkpoint: Optional[Dict[str, Any]] = None
         for ckpt_path in potential_paths:
             maybe_ckpt = self.load_path.joinpath(*ckpt_path)
             if maybe_ckpt.exists():
                 checkpoint = torch.load(str(maybe_ckpt), map_location="cpu")  # type: ignore
                 break
+        if checkpoint is None or not isinstance(checkpoint, dict):
+            return
+
+        for callback in self.callbacks.values():
+            callback.on_checkpoint_load_start(checkpoint)
 
         if "model_state_dict" in checkpoint:
             # Backward compatible with older checkpoint format.
@@ -655,11 +678,11 @@ class PyTorchTrialController(det.LoopTrialController):
             rng_state = checkpoint["rng_state"]
             np.random.set_state(rng_state["np_rng_state"])
             random.setstate(rng_state["random_rng_state"])
-            torch.random.set_rng_state(rng_state["cpu_rng_state"])  # type: ignore
+            torch.random.set_rng_state(rng_state["cpu_rng_state"])
 
             if torch.cuda.device_count():
                 if "gpu_rng_state" in rng_state:
-                    torch.cuda.set_rng_state(  # type: ignore
+                    torch.cuda.set_rng_state(
                         rng_state["gpu_rng_state"], device=self.context.distributed.get_local_rank()
                     )
                 else:
@@ -691,17 +714,16 @@ class PyTorchTrialController(det.LoopTrialController):
 
         path.mkdir(parents=True, exist_ok=True)
 
-        # The model code is the current working directory.
-        util.write_user_code(path)
+        util.write_user_code(path, self.env.on_cluster)
 
         rng_state = {
-            "cpu_rng_state": torch.random.get_rng_state(),  # type: ignore
+            "cpu_rng_state": torch.random.get_rng_state(),
             "np_rng_state": np.random.get_state(),
             "random_rng_state": random.getstate(),
         }
 
         if torch.cuda.device_count():
-            rng_state["gpu_rng_state"] = torch.cuda.get_rng_state(  # type: ignore
+            rng_state["gpu_rng_state"] = torch.cuda.get_rng_state(
                 self.context.distributed.get_local_rank()
             )
 
@@ -728,9 +750,10 @@ class PyTorchTrialController(det.LoopTrialController):
         if self.context._use_apex:
             checkpoint["amp_state"] = apex.amp.state_dict()
 
-        torch.save(  # type: ignore
-            checkpoint, str(path.joinpath("state_dict.pth")), pickle_module=cloudpickle
-        )
+        for callback in self.callbacks.values():
+            callback.on_checkpoint_save_start(checkpoint)
+
+        torch.save(checkpoint, str(path.joinpath("state_dict.pth")))
 
         for callback in self.callbacks.values():
             callback.on_checkpoint_end(str(path))
@@ -738,8 +761,8 @@ class PyTorchTrialController(det.LoopTrialController):
         return cast(
             workload.Response,
             {
-                "framework": f"torch-{torch.__version__}",  # type: ignore
-                "format": "cloudpickle",
+                "framework": f"torch-{torch.__version__}",
+                "format": "pickle",
             },
         )
 
@@ -749,23 +772,21 @@ class PyTorchTrial(det.Trial):
     PyTorch trials are created by subclassing this abstract class.
     We can do the following things in this trial class:
     * **Define models, optimizers, and LR schedulers**.
-       Initialize models, optimizers, and LR schedulers and wrap them with
-       ``wrap_model``, ``wrap_optimizer``, ``wrap_lr_scheduler`` provided by
-       :class:`PyTorchTrialContext <determined.pytorch.PyTorchTrialContext>`
-       in the :meth:`__init__`.
+       In the :meth:`__init__` method, initialize models, optimizers, and LR schedulers
+       and wrap them with ``wrap_model``, ``wrap_optimizer``, ``wrap_lr_scheduler``
+       provided by :class:`~determined.pytorch.PyTorchTrialContext`.
     * **Run forward and backward passes**.
-       Call ``backward`` and ``step_optimizer`` provided by
-       :class:`PyTorchTrialContext <determined.pytorch.PyTorchTrialContext>` in :meth:`train_batch`.
-       Note that we support arbitrary numbers of models, optimizers, and LR schedulers
+       In :meth:`train_batch`, call ``backward`` and ``step_optimizer`` provided by
+       :class:`~determined.pytorch.PyTorchTrialContext`.
+       We support arbitrary numbers of models, optimizers, and LR schedulers
        and arbitrary orders of running forward and backward passes.
     * **Configure automatic mixed precision**.
-       Call ``configure_apex_amp`` provided by
-       :class:`PyTorchTrialContext <determined.pytorch.PyTorchTrialContext>`
-       in the :meth:`__init__`.
+       In the :meth:`__init__` method, call ``configure_apex_amp`` provided by
+       :class:`~determined.pytorch.PyTorchTrialContext`.
     * **Clip gradients**.
-       In the :meth:`train_batch`, pass a function into
+       In :meth:`train_batch`, pass a function into
        ``step_optimizer(optimizer, clip_grads=...)`` provided by
-       :class:`PyTorchTrialContext <determined.pytorch.PyTorchTrialContext>`.
+       :class:`~determined.pytorch.PyTorchTrialContext`.
     """
 
     trial_controller_class = PyTorchTrialController
@@ -870,10 +891,12 @@ class PyTorchTrial(det.Trial):
         """
         return {}
 
-    def evaluate_batch(self, batch: pytorch.TorchData) -> Dict[str, Any]:
+    def evaluate_batch(self, batch: pytorch.TorchData, batch_idx: int) -> Dict[str, Any]:
         """
-        Calculate evaluation metrics for a batch and return them as a
-        dictionary mapping metric names to metric values.
+        Calculate validation metrics for a batch and return them as a
+        dictionary mapping metric names to metric values. Per-batch validation metrics
+        are reduced (aggregated) to produce a single set of validation metrics for the
+        entire validation set (see :meth:`evaluation_reducer`).
         There are two ways to specify evaluation metrics. Either override
         :meth:`evaluate_batch` or :meth:`evaluate_full_dataset`. While
         :meth:`evaluate_full_dataset` is more flexible,
@@ -902,7 +925,7 @@ class PyTorchTrial(det.Trial):
         return them as a dictionary mapping metric names to reduced metric
         values (i.e., each returned metric is the average or sum of that metric
         across the entire validation set).
-        This validation can not be distributed and is performed on a single
+        This validation cannot be distributed and is performed on a single
         device, even when multiple devices (slots) are used for training. Only
         one of :meth:`evaluate_full_dataset` and :meth:`evaluate_batch` should
         be overridden by a trial.
@@ -911,6 +934,14 @@ class PyTorchTrial(det.Trial):
             data_loader (torch.utils.data.DataLoader): data loader for evaluating.
         """
         pass
+
+    def _records_in_batch(self, batch):
+        """Count the number of records batch.  Only needs overriding for unusal datasets."""
+        return pytorch.data_length(batch)
+
+    def _batch_to_device(self, batch, context):
+        """Move a batch to the model.  Only needs overriding for unusal datasets."""
+        return context.to_device(batch)
 
 
 def reset_parameters(model: torch.nn.Module) -> None:
