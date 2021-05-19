@@ -4,7 +4,7 @@ description: detectron2_const_core_install
 # data:
 #   url: https://s3-us-west-2.amazonaws.com/determined-ai-test-data/pytorch_mnist.tar.gz
 hyperparameters:
-  global_batch_size: 8 # 16 per gpu
+  global_batch_size: 16 # 16 per gpu
   model_yaml: mask_rcnn_R_50_FPN_noaug_1x.yaml
   workers: 4
   data_loc: /mnt/dtrain-fsx/detectron2/R-50.pkl
@@ -12,8 +12,17 @@ searcher:
   name: single
   metric: validation_loss
   max_length: 
-    batches: 2000
+    batches: 200
   smaller_is_better: true
+# profiling:
+#   enabled: true
+profiling:
+  enabled: True
+  begin_on_batch: 0
+  end_after_batch: 1000000000
+resources:
+    resource_pool: gpu-pool-8-k80s
+    shm_size: 8589934592
 entrypoint: model_def:DetectronTrial
 max_restarts: 0
 bind_mounts:

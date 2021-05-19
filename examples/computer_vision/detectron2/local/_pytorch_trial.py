@@ -27,7 +27,7 @@ class PyTorchTrialController(det.LoopTrialController):
         check.is_instance(trial_inst, PyTorchTrial, "PyTorchTrialController needs an PyTorchTrial")
         self.trial = cast(PyTorchTrial, trial_inst)
         self.context = cast(pytorch.PyTorchTrialContext, self.context)
-        self.context.experimental._set_allgather_fn(self.allgather_metrics)
+        self.context._set_allgather_fn(self.allgather_metrics)
         self.callbacks = self.trial.build_callbacks()
 
         check.gt_eq(
@@ -272,13 +272,24 @@ class PyTorchTrialController(det.LoopTrialController):
         """
         This function aims at automatically step a LR scheduler. It should be called per batch.
         """
+
+        # Never step lr when we do not step optimizer.
+        if not self.context._should_communicate_and_update():
+            return
+
         if lr_scheduler._step_mode == pytorch.LRScheduler.StepMode.STEP_EVERY_BATCH:
-            if (batch_idx + 1) % lr_scheduler._frequency == 0:
-                lr_scheduler.step()
+            start_idx = batch_idx - self.hvd_config.aggregation_frequency + 1
+            for i in range(start_idx, batch_idx + 1):
+                if (i + 1) % lr_scheduler._frequency == 0:
+                    lr_scheduler.step()
         elif lr_scheduler._step_mode == pytorch.LRScheduler.StepMode.STEP_EVERY_EPOCH:
-            mod = (batch_idx + 1) % (len(self.training_loader) * lr_scheduler._frequency)
-            if mod == 0 or mod < self.hvd_config.aggregation_frequency:
-                lr_scheduler.step()
+            # We will step if the next optimizer step will land in the next epoch.
+            epoch_idx = self.get_epoch_idx(batch_idx)
+            next_steppable_batch = batch_idx + self.hvd_config.aggregation_frequency
+            next_batch_epoch_idx = self.get_epoch_idx(next_steppable_batch)
+            for e in range(epoch_idx, next_batch_epoch_idx):
+                if (e + 1) % lr_scheduler._frequency == 0:
+                    lr_scheduler.step()
 
     def _should_update_scaler(self) -> bool:
         if not self.context._scaler or not self.context.experimental._auto_amp:
@@ -291,7 +302,7 @@ class PyTorchTrialController(det.LoopTrialController):
         self, step_id: int, num_batches: int, total_batches_processed: int
     ) -> workload.Response:
         check.gt(step_id, 0)
-        self.context.experimental.reset_reducers()
+        self.context.reset_reducers()
 
         # Set the behavior of certain layers (e.g., dropout) that are different
         # between training and inference.
@@ -359,9 +370,7 @@ class PyTorchTrialController(det.LoopTrialController):
         # Ignore batch_metrics entirely for custom reducers; there's no guarantee that per-batch
         # metrics are even logical for a custom reducer.
         metrics["avg_metrics"].update(
-            self._convert_metrics_to_numpy(
-                self.context.experimental.reduce_metrics(for_training=True)
-            )
+            self._convert_metrics_to_numpy(self.context.reduce_metrics(for_training=True))
         )
 
         if not self.is_chief:
@@ -381,7 +390,7 @@ class PyTorchTrialController(det.LoopTrialController):
 
     @torch.no_grad()  # type: ignore
     def _compute_validation_metrics(self) -> workload.Response:
-        self.context.experimental.reset_reducers()
+        self.context.reset_reducers()
         # Set the behavior of certain layers (e.g., dropout) that are
         # different between training and inference.
         for model in self.context.models:
@@ -462,9 +471,7 @@ class PyTorchTrialController(det.LoopTrialController):
                 num_inputs = self.context.get_per_slot_batch_size() * len(self.validation_loader)
 
         metrics.update(
-            self._convert_metrics_to_numpy(
-                self.context.experimental.reduce_metrics(for_training=False)
-            )
+            self._convert_metrics_to_numpy(self.context.reduce_metrics(for_training=False))
         )
 
         if self.hvd_config.use and any(

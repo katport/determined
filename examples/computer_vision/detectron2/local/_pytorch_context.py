@@ -33,7 +33,7 @@ except ImportError:
     pass
 
 
-class PyTorchTrialContext(det.TrialContext):
+class PyTorchTrialContext(det.TrialContext, pytorch._PyTorchReducerContext):
     """Contains runtime information for any Determined workflow that uses the ``PyTorch`` API.
     With this class, users can do the following things:
     1. Wrap PyTorch models, optimizers, and LR schedulers with their Determined-compatible
@@ -49,7 +49,8 @@ class PyTorchTrialContext(det.TrialContext):
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+        det.TrialContext.__init__(self, *args, **kwargs)
+        pytorch._PyTorchReducerContext.__init__(self)
 
         self._init_device()
 
@@ -78,6 +79,7 @@ class PyTorchTrialContext(det.TrialContext):
         self._validation_shuffles = 0
 
         self.experimental = pytorch.PyTorchExperimentalContext(self)
+        self._reducers = pytorch._PyTorchReducerContext()
 
     def autocast_forward_pass(self, to_wrap: torch.nn.Module) -> torch.nn.Module:
         # First, ensure the forward pass is wrapped in an autocast context:

@@ -101,7 +101,6 @@ class DetectronTrial(PyTorchTrial):
     def build_validation_data_loader(self):
         return self.data_loader
 
-
     def train_batch(self, batch: TorchData, epoch_idx: int, batch_idx: int):
         # print (len(batch))
         # print (batch[0])
