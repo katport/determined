@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 import determined as det
-from determined import horovod, ipc, pytorch, util, workload
+from determined import horovod, ipc, profiler, pytorch, util, workload
 from determined.common import check
 from determined.horovod import hvd
 from determined.util import has_param
@@ -21,8 +21,26 @@ except ImportError:
 
 
 class PyTorchTrialController(det.LoopTrialController):
-    def __init__(self, trial_inst: det.Trial, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        trial_inst: det.Trial,
+        context: Any,
+        env: det.EnvContext,
+        workloads: workload.Stream,
+        load_path: Optional[pathlib.Path],
+        rendezvous_info: det.RendezvousInfo,
+        hvd_config: horovod.HorovodContext,
+        prof: profiler.ProfilerAgent,
+    ) -> None:
+        super().__init__(
+            context=context,
+            env=env,
+            workloads=workloads,
+            load_path=load_path,
+            rendezvous_info=rendezvous_info,
+            hvd_config=hvd_config,
+            prof=prof,
+        )
 
         check.is_instance(trial_inst, PyTorchTrial, "PyTorchTrialController needs an PyTorchTrial")
         self.trial = cast(PyTorchTrial, trial_inst)
@@ -83,8 +101,26 @@ class PyTorchTrialController(det.LoopTrialController):
         # torch.backends.cudnn.benchmark = False
 
     @staticmethod
-    def from_trial(*args: Any, **kwargs: Any) -> det.TrialController:
-        return PyTorchTrialController(*args, **kwargs)
+    def from_trial(
+        trial_inst: "det.Trial",
+        prof: profiler.ProfilerAgent,
+        context: det.TrialContext,
+        env: det.EnvContext,
+        workloads: workload.Stream,
+        load_path: Optional[pathlib.Path],
+        rendezvous_info: det.RendezvousInfo,
+        hvd_config: horovod.HorovodContext,
+    ) -> det.TrialController:
+        return PyTorchTrialController(
+            trial_inst=trial_inst,
+            context=context,
+            env=env,
+            workloads=workloads,
+            load_path=load_path,
+            rendezvous_info=rendezvous_info,
+            hvd_config=hvd_config,
+            prof=prof,
+        )
 
     @staticmethod
     def from_native(*args: Any, **kwargs: Any) -> det.TrialController:
@@ -316,25 +352,30 @@ class PyTorchTrialController(det.LoopTrialController):
         num_inputs = 0
 
         for batch_idx in range(start, end):
-            batch = next(self.training_iterator)
-
-            ## old code:
-            # num_inputs += pytorch.data_length(batch)
-            # batch = self.context.to_device(batch)
-
+            self.prof.update_batch_idx(batch_idx)
+            with self.prof.record_timing("dataloader_next"):
+                batch = next(self.training_iterator)
             num_inputs += self.trial._records_in_batch(batch)
-            batch = self.trial._batch_to_device(batch, self.context)
+
+            with self.prof.record_timing("to_device"):
+                # batch = self.context.to_device(batch)
+                batch = self.trial._batch_to_device(batch, self.context)
+
 
             self.context._current_batch_idx = batch_idx
             if self.context.is_epoch_start():
                 for callback in self.callbacks.values():
-                    callback.on_training_epoch_start()
+                    with self.prof.record_timing(
+                        f"callbacks.{callback.__class__.__name__}.on_training_epoch_start"
+                    ):
+                        callback.on_training_epoch_start()
             self.context._loss_ids = {}
-            tr_metrics = self.trial.train_batch(
-                batch=batch,
-                epoch_idx=self.get_epoch_idx(batch_idx),
-                batch_idx=batch_idx,
-            )
+            with self.prof.record_timing("train_batch"):
+                tr_metrics = self.trial.train_batch(
+                    batch=batch,
+                    epoch_idx=self.get_epoch_idx(batch_idx),
+                    batch_idx=batch_idx,
+                )
             if self._should_update_scaler():
                 self.context._scaler.update()
             if isinstance(tr_metrics, torch.Tensor):
@@ -347,37 +388,107 @@ class PyTorchTrialController(det.LoopTrialController):
             )
 
             # Step learning rate of a pytorch.LRScheduler.
-            for lr_scheduler in self.context.lr_schedulers:
-                self._auto_step_lr_scheduler_per_batch(batch_idx, lr_scheduler)
+            with self.prof.record_timing("step_lr_schedulers"):
+                for lr_scheduler in self.context.lr_schedulers:
+                    self._auto_step_lr_scheduler_per_batch(batch_idx, lr_scheduler)
 
-            for name, metric in tr_metrics.items():
-                # Convert PyTorch metric values to NumPy, so that
-                # `det.util.encode_json` handles them properly without
-                # needing a dependency on PyTorch.
-                if isinstance(metric, torch.Tensor):
-                    metric = metric.cpu().detach().numpy()
-                tr_metrics[name] = metric
+            with self.prof.record_timing("from_device"):
+                for name, metric in tr_metrics.items():
+                    # Convert PyTorch metric values to NumPy, so that
+                    # `det.util.encode_json` handles them properly without
+                    # needing a dependency on PyTorch.
+                    if isinstance(metric, torch.Tensor):
+                        metric = metric.cpu().detach().numpy()
+                    tr_metrics[name] = metric
 
             per_batch_metrics.append(tr_metrics)
 
         # Aggregate and reduce training metrics from all the training processes.
         if self.hvd_config.use and self.hvd_config.average_training_metrics:
-            per_batch_metrics = self._average_training_metrics(per_batch_metrics)
+            with self.prof.record_timing("average_training_metrics"):
+                per_batch_metrics = self._average_training_metrics(per_batch_metrics)
         if self.hvd_config.use:
             num_inputs *= hvd.size()
         metrics = det.util.make_metrics(num_inputs, per_batch_metrics)
 
         # Ignore batch_metrics entirely for custom reducers; there's no guarantee that per-batch
         # metrics are even logical for a custom reducer.
-        metrics["avg_metrics"].update(
-            self._convert_metrics_to_numpy(self.context.reduce_metrics(for_training=True))
-        )
+        with self.prof.record_timing("reduce_metrics"):
+            metrics["avg_metrics"].update(
+                self._convert_metrics_to_numpy(self.context.reduce_metrics(for_training=True))
+            )
 
         if not self.is_chief:
             # The training metrics are reported only in the chief process.
             return workload.Skipped()
 
         logging.debug(f"Done training step: {num_inputs} records in {num_batches} batches.")
+
+
+
+        # for batch_idx in range(start, end):
+        #     batch = next(self.training_iterator)
+
+        #     ## old code:
+        #     # num_inputs += pytorch.data_length(batch)
+        #     # batch = self.context.to_device(batch)
+
+        #     num_inputs += self.trial._records_in_batch(batch)
+        #     batch = self.trial._batch_to_device(batch, self.context)
+
+        #     self.context._current_batch_idx = batch_idx
+        #     if self.context.is_epoch_start():
+        #         for callback in self.callbacks.values():
+        #             callback.on_training_epoch_start()
+        #     self.context._loss_ids = {}
+        #     tr_metrics = self.trial.train_batch(
+        #         batch=batch,
+        #         epoch_idx=self.get_epoch_idx(batch_idx),
+        #         batch_idx=batch_idx,
+        #     )
+        #     if self._should_update_scaler():
+        #         self.context._scaler.update()
+        #     if isinstance(tr_metrics, torch.Tensor):
+        #         tr_metrics = {"loss": tr_metrics}
+        #     check.is_instance(
+        #         tr_metrics,
+        #         dict,
+        #         "train_batch() must return a dictionary "
+        #         f"mapping string names to Tensor metrics, got {type(tr_metrics)}",
+        #     )
+
+        #     # Step learning rate of a pytorch.LRScheduler.
+        #     for lr_scheduler in self.context.lr_schedulers:
+        #         self._auto_step_lr_scheduler_per_batch(batch_idx, lr_scheduler)
+
+        #     for name, metric in tr_metrics.items():
+        #         # Convert PyTorch metric values to NumPy, so that
+        #         # `det.util.encode_json` handles them properly without
+        #         # needing a dependency on PyTorch.
+        #         if isinstance(metric, torch.Tensor):
+        #             metric = metric.cpu().detach().numpy()
+        #         tr_metrics[name] = metric
+
+        #     per_batch_metrics.append(tr_metrics)
+
+        # # Aggregate and reduce training metrics from all the training processes.
+        # if self.hvd_config.use and self.hvd_config.average_training_metrics:
+        #     per_batch_metrics = self._average_training_metrics(per_batch_metrics)
+        # if self.hvd_config.use:
+        #     num_inputs *= hvd.size()
+        # metrics = det.util.make_metrics(num_inputs, per_batch_metrics)
+
+        # # Ignore batch_metrics entirely for custom reducers; there's no guarantee that per-batch
+        # # metrics are even logical for a custom reducer.
+        # metrics["avg_metrics"].update(
+        #     self._convert_metrics_to_numpy(self.context.reduce_metrics(for_training=True))
+        # )
+
+        # if not self.is_chief:
+        #     # The training metrics are reported only in the chief process.
+        #     return workload.Skipped()
+
+        # logging.debug(f"Done training step: {num_inputs} records in {num_batches} batches.")
 
         return metrics
 
